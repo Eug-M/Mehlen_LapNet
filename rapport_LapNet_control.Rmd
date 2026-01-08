@@ -1,0 +1,1125 @@
+---
+title: "LapNet"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r librairies, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+#BiocManager::install("DESeq2")
+library("RColorBrewer")
+library("dplyr")
+library("ggplot2")
+library(gridExtra)
+library("tidyverse")
+library("viridis")
+library('survival')
+library(ranger)
+library(ggfortify)
+library(survminer)
+library(KMEANS.KNN)
+library(factoextra)
+library(GSVA)
+library(gplots)
+library("DESeq2")
+library(ggrepel)
+library(AnnotationDbi) 
+library(org.Hs.eg.db)
+library(GenomicFeatures)
+# library(PDACMOC) # does not work locally -> ran from https://pdacmoc.cnio.es/ using the raw files and the following parameters: No batch correction, EnsemblID, all tumor classifiers, no stroma classification
+```
+
+# Objectif
+
+Etudier le lien entre niveau de Neogenin et survie sur les données LapNet versus les données du papier Nicolle et al. eBioMedicine 2024.
+
+Cet essai comporte 397 patients, dont 170 locally advanced et 95 traités uniquement avec Folfirinox, dont 43 présentent les deux conditions (mais 1 d'entre eux n'a pas de données de survie). Je vais me restreindre à ces 42 patients dans un premier temps.
+
+## Jeu de données LapNet
+
+```{r donnees cliniques LapNet et expression des genes d interet}
+coldata_lapnet <- read.csv('/home/eugenie-modolo/Documents/Lapnet/colData_LapNet.csv', sep=";")
+
+counts_genes_lapnet <- read.table("/home/eugenie-modolo/Documents/Lapnet/results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+
+# on modifie la matrix count_genes pour les 3 gènes qui sont en doublons pour les 200 gènes d'intérêt
+counts_genes_lapnet[which(row.names(counts_genes_lapnet)=='ENSG00000291748.1'),'gene_name'] <- 'COL3A1_2' 
+counts_genes_lapnet[which(row.names(counts_genes_lapnet)=='ENSG00000276886.4'),'gene_name'] <- 'GREM1_2' 
+counts_genes_lapnet[which(row.names(counts_genes_lapnet)=='ENSG00000282049.1'),'gene_name'] <- 'PRSS2_2'
+count_columns <- colnames(counts_genes_lapnet)[colnames(counts_genes_lapnet) != "gene_name"]
+# besoin de prendre les integers pour DESeq2
+counts_genes_lapnet[count_columns] <- round(counts_genes_lapnet[count_columns])
+count_matrix_lapnet <- as.matrix(counts_genes_lapnet[, count_columns])
+rownames(count_matrix_lapnet) <- counts_genes_lapnet$gene_name  # Gene names become row names
+
+# on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code, pour que le ssGSEA fonctionne
+dup_genes <- counts_genes_lapnet[duplicated(counts_genes_lapnet$gene_name),'gene_name']
+counts_genes_lapnet$feature <- ifelse((is.na(counts_genes_lapnet$gene_name) | counts_genes_lapnet$gene_name %in% dup_genes), rownames(counts_genes_lapnet), counts_genes_lapnet$gene_name)
+count_columns <- colnames(counts_genes_lapnet)[colnames(counts_genes_lapnet) != "gene_name" & colnames(counts_genes_lapnet) != "feature"]
+count_matrix_lapnet <- as.matrix(counts_genes_lapnet[, count_columns])
+rownames(count_matrix_lapnet) <- counts_genes_lapnet$feature
+
+coldata_lapnet <- data.frame(coldata_lapnet, row.names = count_columns)
+
+# normalisation des counts par DESeq2
+# /!\ il peut être utile de retirer les gènes pas assez exprimés ...
+dds_lapnet <- DESeqDataSetFromMatrix(
+  countData = count_matrix_lapnet,
+  colData = coldata_lapnet,
+  design = ~ Sex
+)
+dds_lapnet <- DESeq(dds_lapnet)
+norm.count_lapnet <- as.data.frame(counts(dds_lapnet, normalized=TRUE))
+
+
+genes_of_interest <- c('NTN1', 'EPCAM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'VIM')
+expression_genes <- norm.count_lapnet[which(row.names(norm.count_lapnet) %in% genes_of_interest),]
+t_expression_genes <- data.frame(t(expression_genes))
+for (gene in genes_of_interest) {
+  coldata_lapnet[[gene]] <- t_expression_genes[[gene]]
+  coldata_lapnet[[paste0(gene, "_log")]] <- log2(t_expression_genes[[gene]] + 1)
+}
+
+# on ne conserve que les 22 échantillons d'intérêt
+coldata_lapnet <- coldata_lapnet[which(coldata_lapnet$Time == 'pre' & coldata_lapnet$SampleID != '06-006'),]
+
+# draw coldata_lapnet table
+as.matrix(coldata_lapnet) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(coldata_lapnet),fontSize = '80%')
+
+```
+
+
+## Jeu de données contrôle
+
+```{r donnees cliniques control et expression des genes d interet}
+coldata_control <- read.csv('/home/eugenie-modolo/Documents/Lapnet/donnees_control_LPAC/clinical_data.csv', sep="\t")
+coldata_control <- data.frame(coldata_control, row.names = coldata_control$sample_id)
+coldata_control$OS <- coldata_control$os_month*30.5
+coldata_control$PFS <- coldata_control$pfs_month*30.5
+
+# on ne conserve que les LAPC
+coldata_control <- coldata_control[which(coldata_control$disease_stage == 'locAdvanced' & coldata_control$first_treatment == 'FOLFIRINOX'),]
+# on retire le patient sans donnée de survie
+coldata_control <- coldata_control[which(coldata_control$sample_id != 'BPC198T'),]
+
+
+counts_genes_control <- read.table("/home/eugenie-modolo/Documents/Lapnet/donnees_control_LPAC/GSE253260_BACAP.rawct.tsv",
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+# on ne garde que les 42 patients d'intérêt
+patients <- coldata_control$sample_id
+counts_genes_control <- counts_genes_control[,colnames(counts_genes_control) %in% patients]
+# on ajoute les noms des gènes 
+counts_genes_control$gene_ensg <- row.names(counts_genes_control)
+gene = as.data.frame(org.Hs.egALIAS2EG)
+symbol =as.data.frame(org.Hs.egSYMBOL)
+EnsID = as.data.frame(org.Hs.egENSEMBL)
+GeneType = as.data.frame(org.Hs.egGENETYPE)
+geneID = gene
+geneID$official = symbol[match(geneID[,1],symbol[,1]),2]
+geneID$ensID = EnsID[match(geneID[,1],EnsID[,1]),2]
+geneID$GeneType = GeneType[match(geneID[,1],GeneType[,1]),2]
+match_index <- match(counts_genes_control$gene_ensg, geneID$ensID)
+counts_genes_control$gene_name <- geneID$official[match_index]
+#rownames(counts_genes_control) <- counts_genes_control$gene_name
+rm(EnsID, gene, symbol, GeneType, geneID)
+
+# on met les noms des gènes en row.names, en remplaçant les dupliqués par leur ENSG code
+# pas de gènes en doublon pour les 200 gènes d'intérêt EMT (le tableau expression_genes fait bien 200 lignes)
+dup_genes <- counts_genes_control[duplicated(counts_genes_control$gene_name),'gene_name']
+counts_genes_control$feature <- ifelse((is.na(counts_genes_control$gene_name) | counts_genes_control$gene_name %in% dup_genes), rownames(counts_genes_control), counts_genes_control$gene_name)
+count_columns_control <- colnames(counts_genes_control)[colnames(counts_genes_control) != "gene_name" & colnames(counts_genes_control) != "feature" & colnames(counts_genes_control) != "gene_ensg"]
+count_matrix_control <- as.matrix(counts_genes_control[, count_columns_control])
+rownames(count_matrix_control) <- counts_genes_control$feature
+# méthode Nico :
+# rownames(counts_genes_control) <- make.names(counts_genes_control$gene_name, unique = TRUE) 
+
+# vérif
+# sum(row.names(coldata_control) == count_columns_control) == length(count_columns_control)
+
+# normalisation des counts par DESeq2
+# /!\ il peut être utile de retirer les gènes pas assez exprimés ...
+dds_control <- DESeqDataSetFromMatrix(
+  countData = count_matrix_control,
+  colData = coldata_control,
+  design = ~ sex
+)
+dds_control <- DESeq(dds_control)
+norm.count_control <- as.data.frame(counts(dds_control, normalized=TRUE))
+
+genes_of_interest <- c('NTN1', 'EPCAM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'VIM')
+expression_genes <- norm.count_control[which(row.names(norm.count_control) %in% genes_of_interest),]
+t_expression_genes <- data.frame(t(expression_genes))
+for (gene in genes_of_interest) {
+  coldata_control[[gene]] <- t_expression_genes[[gene]]
+  coldata_control[[paste0(gene, "_log")]] <- log2(t_expression_genes[[gene]] + 1)
+}
+
+# draw coldata_control table
+as.matrix(coldata_control) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(coldata_control),fontSize = '80%')
+
+```
+
+## Comparaison des deux jeux de données
+
+```{r log2 Neogenin gaussienne}
+
+create_gene_histograms <- function(gene_name, df1, df2) {
+  gene_log <- paste0(gene_name, "_log")
+  
+  p1 <- ggplot(df1, aes(x = .data[[gene_log]])) + 
+    geom_histogram() +
+    ggtitle(paste0("Histogram log2(", gene_name, "+1) LapNet"))
+  
+  p2 <- ggplot(df2, aes(x = .data[[gene_log]])) + 
+    geom_histogram() +
+    ggtitle(paste0("Histogram log2(", gene_name, "+1) Control"))
+  
+  grid.arrange(p1, p2, nrow = 1)
+}
+
+for (gene in genes_of_interest) {
+  create_gene_histograms(gene, coldata_lapnet, coldata_control)
+}
+
+```
+
+
+## Score "NetrinPred" d'Hector
+
+```{r courbes NetrinPred}
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc_lapnet_pfs <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(coldata_lapnet$PFS), max(coldata_lapnet$PFS)))
+sc_lapnet_os <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(coldata_lapnet$OS), max(coldata_lapnet$OS)))
+sc_control_pfs <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(coldata_control$PFS), max(coldata_control$PFS)))
+sc_control_os <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(coldata_control$OS), max(coldata_control$OS)))
+
+p1 <- ggplot(coldata_lapnet, aes(x=NEO1_log, y=-UNC5B_log, col=PFS)) +
+  geom_point() +
+  theme_bw() +
+  sc_lapnet_pfs +
+  ggtitle("NetrinPred: LapNet PFS")
+
+p2 <- ggplot(coldata_lapnet, aes(x=NEO1_log, y=-UNC5B_log, col=OS)) +
+  geom_point() +
+  theme_bw() +
+  sc_lapnet_os +
+  ggtitle("NetrinPred: LapNet OS")
+  
+p3 <- ggplot(coldata_control, aes(x=NEO1_log, y=-UNC5B_log, col=PFS)) +
+  geom_point() +
+  theme_bw() +
+  sc_control_pfs +
+  ggtitle("NetrinPred: Control PFS")
+
+p4 <- ggplot(coldata_control, aes(x=NEO1_log, y=-UNC5B_log, col=OS)) +
+  geom_point() +
+  theme_bw() +
+  sc_control_os +
+  ggtitle("NetrinPred: Control OS")
+  
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+```
+
+
+## Survival plots selon la Neogenin en séparant avec la médiane 
+
+Médiane pour LapNet : `r median(coldata_lapnet$NEO1_log)`
+Médiane pour le contrôle : `r median(coldata_control$NEO1_log)`
+
+```{r Kaplan-Meier OS plots Neogenin median}
+coldata_lapnet$NEO1_level <- case_when(
+  coldata_lapnet$NEO1_log >= median(coldata_lapnet$NEO1_log) ~ "High",
+  coldata_lapnet$NEO1_log < median(coldata_lapnet$NEO1_log) ~ "Low")
+coldata_control$NEO1_level <- case_when(
+  coldata_control$NEO1_log >= median(coldata_control$NEO1_log) ~ "High",
+  coldata_control$NEO1_log < median(coldata_control$NEO1_log) ~ "Low")
+
+km_fit_os_lapnet <- survfit(Surv(OS, Death_status) ~ NEO1_level, data=coldata_lapnet)
+legend_order <- gsub("NEO1_level=", "", names(km_fit_os_lapnet$strata))
+survminer::ggsurvplot(
+  km_fit_os_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_os_control <- survfit(Surv(OS, Death_status) ~ NEO1_level, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_os_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+
+```{r Kaplan-Meier PFS plots Neogenin median}
+
+km_fit_pfs_lapnet <- survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=coldata_lapnet)
+survminer::ggsurvplot(
+  km_fit_pfs_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs_control <- survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_pfs_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=coldata_lapnet))[[1]]` (NA car on a moins de 50% de décès), `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=coldata_lapnet))[[2]]`
+
+Médianes OS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=coldata_control))[[2]]`
+
+Médianes PFS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=coldata_lapnet))[[2]]`
+
+Médianes PFS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=coldata_control))[[2]]`
+
+
+## Survival plots selon la Neogenin en séparant avec k-means 
+
+Valeur seuil pour LapNet : 5.5
+Valeur seuil pour le contrôle : 4.5
+
+```{r k-means, results = "hide", include=F}
+km.out <- kmeans(coldata_lapnet$NEO1_log, centers = 2)
+mean(km.out$centers)
+# km.out
+# coldata_lapnet$NEO1_log
+
+km.out <- kmeans(coldata_control$NEO1_log, centers = 2)
+mean(km.out$centers)
+# km.out
+# coldata_control$NEO1_log
+```
+
+
+```{r Kaplan-Meier OS plots Neogenin kmeans}
+coldata_lapnet$NEO1_level2 <- case_when(
+  coldata_lapnet$NEO1_log >= 5.5 ~ "High",
+  coldata_lapnet$NEO1_log < 5.5 ~ "Low")
+
+coldata_control$NEO1_level2 <- case_when(
+  coldata_control$NEO1_log >= 4.5 ~ "High",
+  coldata_control$NEO1_log < 4.5 ~ "Low")
+
+km_fit_os_lapnet <- survfit(Surv(OS, Death_status) ~ NEO1_level2, data=coldata_lapnet)
+legend_order <- gsub("NEO1_level2=", "", names(km_fit_os_lapnet$strata))
+survminer::ggsurvplot(
+  km_fit_os_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_os_control <- survfit(Surv(OS, Death_status) ~ NEO1_level2, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_os_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+
+```{r Kaplan-Meier PFS plots Neogenin kmeans}
+
+km_fit_pfs_lapnet <- survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=coldata_lapnet)
+survminer::ggsurvplot(
+  km_fit_pfs_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs_control <- survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_pfs_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level2, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level2, data=coldata_lapnet))[[2]]`
+
+Médianes OS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level2, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level2, data=coldata_control))[[2]]`
+
+Médianes PFS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=coldata_lapnet))[[2]]`
+
+Médianes PFS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=coldata_control))[[2]]`
+
+
+## Modification du seuil Neogenin High (1/3 High - 2/3 Low)
+
+Valeur limite LapNet pour séparer en 1/3 High - 2/3 Low les niveaux de Neogenin (log2) : entre `r coldata_lapnet[order(coldata_lapnet$NEO1_log, decreasing = F),'NEO1_log'][14]` et `r coldata_lapnet[order(coldata_lapnet$NEO1_log, decreasing = F),'NEO1_log'][15]`
+
+Valeur limite Control pour séparer en 1/3 High - 2/3 Low les niveaux de Neogenin (log2) : `r coldata_control[order(coldata_control$NEO1_log, decreasing = F),'NEO1_log'][28]` 
+
+```{r Kaplan-Meier OS plots Neogenin 1 tiers}
+coldata_lapnet$NEO1_level3 <- case_when(
+  coldata_lapnet$NEO1_log >= 6.31 ~ "High",
+  coldata_lapnet$NEO1_log < 6.31 ~ "Low")
+
+coldata_control$NEO1_level3 <- case_when(
+  coldata_control$NEO1_log >= coldata_control[order(coldata_control$NEO1_log, decreasing = F),'NEO1_log'][28] ~ "High",
+  coldata_control$NEO1_log < coldata_control[order(coldata_control$NEO1_log, decreasing = F),'NEO1_log'][28] ~ "Low")
+
+km_fit_os_lapnet <- survfit(Surv(OS, Death_status) ~ NEO1_level3, data=coldata_lapnet)
+legend_order <- gsub("NEO1_level3=", "", names(km_fit_os_lapnet$strata))
+survminer::ggsurvplot(
+  km_fit_os_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_os_control <- survfit(Surv(OS, Death_status) ~ NEO1_level3, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_os_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+
+```{r Kaplan-Meier PFS plots Neogenin 1 tiers}
+
+km_fit_pfs_lapnet <- survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=coldata_lapnet)
+survminer::ggsurvplot(
+  km_fit_pfs_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs_control <- survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_pfs_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability Control",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level3, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level3, data=coldata_lapnet))[[2]]`
+
+Médianes OS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level3, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level3, data=coldata_control))[[2]]`
+
+Médianes PFS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=coldata_lapnet))[[2]]`
+
+Médianes PFS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=coldata_control))[[2]]`
+
+
+## Modification du seuil Neogenin High (1/3 High - 1/3 Low)
+
+Valeur limite LapNet pour séparer en 1/3 High - 1/3 Low les niveaux de Neogenin (log2) : High entre `r coldata_lapnet[order(coldata_lapnet$NEO1_log, decreasing = F),'NEO1_log'][14]` et `r coldata_lapnet[order(coldata_lapnet$NEO1_log, decreasing = F),'NEO1_log'][15]` / Low entre `r coldata_lapnet[order(coldata_lapnet$NEO1_log, decreasing = F),'NEO1_log'][7]` et `r coldata_lapnet[order(coldata_lapnet$NEO1_log, decreasing = F),'NEO1_log'][8]`
+
+Valeur limite Control pour séparer en 1/3 High - 1/3 Low les niveaux de Neogenin (log2) : High `r coldata_control[order(coldata_control$NEO1_log, decreasing = F),'NEO1_log'][28]` / Low `r coldata_control[order(coldata_control$NEO1_log, decreasing = F),'NEO1_log'][14]`
+
+```{r Kaplan-Meier OS plots Neogenin 1/1 tiers}
+coldata_lapnet$NEO1_level4 <- case_when(
+  coldata_lapnet$NEO1_log >= 6.31 ~ "High",
+  coldata_lapnet$NEO1_log < 5.5 ~ "Low")
+
+coldata_control$NEO1_level4 <- case_when(
+  coldata_control$NEO1_log >= coldata_control[order(coldata_control$NEO1_log, decreasing = F),'NEO1_log'][28] ~ "High",
+  coldata_control$NEO1_log < coldata_control[order(coldata_control$NEO1_log, decreasing = F),'NEO1_log'][14] ~ "Low")
+
+km_fit_os_lapnet <- survfit(Surv(OS, Death_status) ~ NEO1_level4, data=coldata_lapnet)
+legend_order <- gsub("NEO1_level4=", "", names(km_fit_os_lapnet$strata))
+survminer::ggsurvplot(
+  km_fit_os_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_os_control <- survfit(Surv(OS, Death_status) ~ NEO1_level4, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_os_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+
+```{r Kaplan-Meier PFS plots Neogenin 1/1 tiers}
+
+km_fit_pfs_lapnet <- survfit(Surv(PFS, Prog_status) ~ NEO1_level4, data=coldata_lapnet)
+survminer::ggsurvplot(
+  km_fit_pfs_lapnet, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs_control <- survfit(Surv(PFS, Prog_status) ~ NEO1_level4, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_pfs_control, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability Control",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level4, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level4, data=coldata_lapnet))[[2]]`
+
+Médianes OS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level4, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ NEO1_level4, data=coldata_control))[[2]]`
+
+Médianes PFS LapNet selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level4, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level4, data=coldata_lapnet))[[2]]`
+
+Médianes PFS Control selon niveau de Neogenin : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level4, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level4, data=coldata_control))[[2]]`
+
+
+## EMT scores - Hallmark (200 gènes Mésenchymateux, utilisation des counts DESeq2 / len(gene))
+
+En prenant les 200 gènes EMT de Hallmark et avec les counts DESeq2 / len(gene), on obtient les scores EMT suivants en ssGSEA :
+
+```{r counts TPM LapNet}
+
+txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf",format="gtf")
+# then collect the exons per gene id
+exons.list.per.gene <- exonsBy(txdb,by="gene")
+# then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
+exonic.gene.sizes <- as.data.frame(sum(width(GenomicRanges::reduce(exons.list.per.gene))))
+# head(exonic.gene.sizes)
+
+match_index <- match(rownames(counts_genes_lapnet), rownames(exonic.gene.sizes))
+counts_genes_lapnet$gene_length <- exonic.gene.sizes[match_index, 1]
+
+# modifier les valeurs de sortie de DESeq2 pour diviser par la longueur du gène
+# verif que les rownames de norm.count_control sont dans le même ordre que les features de counts_genes_control
+# sum(rownames(norm.count_control) == counts_genes_control$feature) == length(rownames(norm.count_control))
+count_columns <- colnames(counts_genes_lapnet)[colnames(counts_genes_lapnet) != "gene_name" & colnames(counts_genes_lapnet) != "feature" & colnames(counts_genes_lapnet) != "gene_length" & colnames(counts_genes_lapnet) != "01-002_post" & colnames(counts_genes_lapnet) != "01-007_post" & colnames(counts_genes_lapnet) != "02-001_post" & colnames(counts_genes_lapnet) != "02-003_post" & colnames(counts_genes_lapnet) != "09-001_post" & colnames(counts_genes_lapnet) != "02-014_post" & colnames(counts_genes_lapnet) != "06-006_pre"]
+norm.count_lapnet_K <- as.matrix(norm.count_lapnet[, count_columns]/counts_genes_lapnet$gene_length)
+rownames(norm.count_lapnet_K) <- counts_genes_lapnet$feature
+
+# # import des counts en TPM LapNet
+# counts_genes_tpm <- read.table("/home/eugenie-modolo/Documents/Lapnet/results_rnaseq_NFcore/salmon.merged.gene_tpm.tsv", 
+#                      header = TRUE, 
+#                      row.names = 1, 
+#                      sep = "\t",
+#                      check.names = FALSE)
+# 
+# # on modifie la matrix count_genes pour les 3 gènes qui sont en doublons pour les 200 gènes d'intérêt
+# counts_genes_tpm[which(row.names(counts_genes_tpm)=='ENSG00000291748.1'),'gene_name'] <- 'COL3A1_2' 
+# counts_genes_tpm[which(row.names(counts_genes_tpm)=='ENSG00000276886.4'),'gene_name'] <- 'GREM1_2' 
+# counts_genes_tpm[which(row.names(counts_genes_tpm)=='ENSG00000282049.1'),'gene_name'] <- 'PRSS2_2'
+# count_columns_tpm <- colnames(counts_genes_tpm)[colnames(counts_genes_tpm) != "gene_name"]
+# count_matrix_tpm <- as.matrix(counts_genes_tpm[, count_columns_tpm])
+# rownames(count_matrix_tpm) <- counts_genes_tpm$gene_name  # Gene names become row names
+# 
+# # on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code, pour que le ssGSEA fonctionne
+# dup_genes <- counts_genes_tpm[duplicated(counts_genes_tpm$gene_name),'gene_name']
+# counts_genes_tpm$feature <- ifelse((is.na(counts_genes_tpm$gene_name) | counts_genes_tpm$gene_name %in% dup_genes), rownames(counts_genes_tpm), counts_genes_tpm$gene_name)
+# count_columns_tpm <- colnames(counts_genes_tpm)[colnames(counts_genes_tpm) != "gene_name" & colnames(counts_genes_tpm) != "feature"]
+# count_matrix_tpm_lapnet <- as.matrix(counts_genes_tpm[, count_columns_tpm])
+# rownames(count_matrix_tpm_lapnet) <- counts_genes_tpm$feature
+# 
+# # on ne garde que les 22 échantillons d'intérêt pour lancer ssGSEA
+# count_matrix_lapnet <- count_matrix_tpm_lapnet[,c("01-001_pre","01-003_pre","01-004_pre",
+#                         "01-006_pre","01-007_pre","01-011_pre","01-012_pre","02-001_pre","02-002_pre","02-003_pre",
+#                         "02-006_pre","02-010_pre","02-014_pre","03-002_pre","03-003_pre","03-006_pre","06-001_pre",
+#                         "06-007_pre","06-008_pre","06-009_pre","08-001_pre","08-002_pre")]
+
+```
+
+
+```{r counts TPM Control}
+
+# from https://www.biostars.org/p/83901/
+# First, import the GTF-file that you have also used as input for htseq-count
+txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Lapnet/donnees_control_LPAC/gencode.v38.primary_assembly.annotation.gtf",format="gtf")
+# then collect the exons per gene id
+exons.list.per.gene <- exonsBy(txdb,by="gene")
+# then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
+exonic.gene.sizes <- as.data.frame(sum(width(GenomicRanges::reduce(exons.list.per.gene))))
+# head(exonic.gene.sizes)
+
+gene_names_clean <- sub("\\..*", "", rownames(exonic.gene.sizes))
+# sum(duplicated(gene_names_clean)) # 44
+# checking if the gene lengths for these 44 duplicates varies greatly -> nope, identical each time. they are all genes with "_PAR_Y"
+# gene_names_duplicated <- gene_names_clean[duplicated(gene_names_clean)]
+# pattern <- paste0("^(", paste(gene_names_duplicated, collapse = "|"), ")\\.")
+# all_matching_rows <- grep(pattern, rownames(exonic.gene.sizes), value = TRUE)
+# length(exonic.gene.sizes[all_matching_rows,])
+# all_matching_rows
+# exonic.gene.sizes[all_matching_rows]
+counts_clean <- rownames(counts_genes_control)
+match_index <- match(counts_clean, gene_names_clean)
+counts_genes_control$gene_length <- exonic.gene.sizes[match_index, 1]
+
+# modifier les valeurs de sortie de DESeq2 pour diviser par la longueur du gène
+# verif que les rownames de norm.count_control sont dans le même ordre que les features de counts_genes_control
+# sum(rownames(norm.count_control) == counts_genes_control$feature) == length(rownames(norm.count_control))
+norm.count_control_K <- norm.count_control/counts_genes_control$gene_length
+
+# # from Nico
+# common <- intersect(rownames(exonic.gene.sizes), rownames(counts_genes_control))
+# countdata <- count.endo[common,]
+# epg <- exonic.gene.sizes[common]
+# #refaire le desqMAt 
+# ddsMat <- DESeqDataSetFromMatrix(countData = count_matrix_control, colData = coldata_control, design = ~ sex)
+# dds <- DESeq(ddsMat, parallel = T) #objet dans deseq2
+# rowRanges(dds) <- epg
+# #calcul du fpkm
+# xfpkm <- as.data.frame(fpkm(dds, robust=T))
+
+# transformation des counts en TPM Control
+# counts_genes_tpm <- read.table("/home/eugenie-modolo/Documents/Lapnet/donnees_control_LPAC/genere_par_NCBI/GSE253260_norm_counts_TPM_GRCh38.p13_NCBI.tsv", 
+#                      header = TRUE, 
+#                      row.names = 1, 
+#                      sep = "\t",
+#                      check.names = FALSE)
+```
+
+
+```{r scores EMT ssGSEA}
+tmp <- read.csv('/home/eugenie-modolo/Documents/Reference_files/HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION.v2025.1.Hs.tsv', sep="\t")
+list_genes <- unlist(strsplit(tmp[17,2], ","))
+list_genes_ssgsea <- list(list_genes, "")
+names(list_genes_ssgsea) <- c("EMT", "")
+
+# ssGSEA LapNet
+#gsvaparams <- gsvaParam(count_matrix_lapnet,
+gsvaparams <- gsvaParam(norm.count_lapnet_K,
+                        list_genes_ssgsea)
+result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+scores_EMT <- result_gsva[1,]
+coldata_lapnet$EMT_score <- scores_EMT
+
+# ssGSEA Control
+gsvaparams <- gsvaParam(as.matrix(norm.count_control_K),
+                        list_genes_ssgsea)
+result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+scores_EMT <- result_gsva[1,]
+coldata_control$EMT_score <- scores_EMT
+
+# plots
+hist(coldata_lapnet$EMT_score)
+hist(coldata_control$EMT_score)
+
+```
+
+On coupe les valeurs à un score de 0 (confirmé par k-means). Cela donne les survival plots suivants :
+
+```{r Kaplan-Meier plots EMT score Hallmark}
+coldata_lapnet$EMT_s_level <- case_when(
+  coldata_lapnet$EMT_score >= 0 ~ "High",
+  coldata_lapnet$EMT_score < 0 ~ "Low")
+coldata_control$EMT_s_level <- case_when(
+  coldata_control$EMT_score >= 0 ~ "High",
+  coldata_control$EMT_score < 0 ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ EMT_s_level, data=coldata_lapnet)
+legend_order <- gsub("EMT_s_level=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ EMT_s_level, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=coldata_lapnet)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon Score EMT LapNet : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=coldata_lapnet))[[2]]`.
+
+Médianes OS selon Score EMT Control : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=coldata_control))[[2]]`.
+
+Médianes PFS selon Score EMT LapNet : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=coldata_lapnet))[[2]]`
+
+Médianes PFS selon Score EMT Control : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=coldata_control))[[2]]`
+
+
+On coupe les valeurs à la médiane (LapNet : `r median(coldata_lapnet$EMT_score)`, Control : `r median(coldata_control$EMT_score)`). Cela donne les survival plots suivants :
+
+```{r Kaplan-Meier plots EMT score Hallmark median}
+coldata_lapnet$EMT_s_level2 <- case_when(
+  coldata_lapnet$EMT_score >= median(coldata_lapnet$EMT_score) ~ "High",
+  coldata_lapnet$EMT_score < median(coldata_lapnet$EMT_score) ~ "Low")
+coldata_control$EMT_s_level2 <- case_when(
+  coldata_control$EMT_score >= median(coldata_control$EMT_score) ~ "High",
+  coldata_control$EMT_score < median(coldata_control$EMT_score) ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ EMT_s_level2, data=coldata_lapnet)
+legend_order <- gsub("EMT_s_level2=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ EMT_s_level2, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ EMT_s_level2, data=coldata_lapnet)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_lapnet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark LapNet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ EMT_s_level2, data=coldata_control)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_control,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 100,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark Control",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon Score EMT LapNet : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ EMT_s_level2, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ EMT_s_level2, data=coldata_lapnet))[[2]]`.
+
+Médianes OS selon Score EMT Control : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ EMT_s_level2, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ EMT_s_level2, data=coldata_control))[[2]]`.
+
+Médianes PFS selon Score EMT LapNet : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level2, data=coldata_lapnet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level2, data=coldata_lapnet))[[2]]`
+
+Médianes PFS selon Score EMT Control : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level2, data=coldata_control))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level2, data=coldata_control))[[2]]`
+
+
+Etude du heatmap selon les 200 gènes Hallmark : LapNet
+
+```{r score EMT Heatmap LapNet}
+
+distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+
+expression_genes_200_lapnet <- norm.count_lapnet_K[which(row.names(norm.count_lapnet_K) %in% list_genes),]
+hm <- heatmap.2(as.matrix(log2(expression_genes_200_lapnet+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+target <- colnames(expression_genes_200_lapnet)[hm$colInd]
+coldata_lapnet$row.names <- rownames(coldata_lapnet)
+coldata_lapnet %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=EMT_score)) +
+  geom_point() +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+```
+
+Etude du heatmap selon les 200 gènes Hallmark : Control
+
+```{r score EMT Heatmap Control}
+
+expression_genes_200_control <- norm.count_control_K[which(row.names(norm.count_control_K) %in% list_genes),]
+hm <- heatmap.2(as.matrix(log2(expression_genes_200_control+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+target <- colnames(expression_genes_200_control)[hm$colInd]
+coldata_control$row.names <- rownames(coldata_control)
+coldata_control %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=EMT_score)) +
+  geom_point() +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+```
+
+
+## Lien entre les classifications de PDAC et l'EMT score :
+
+```{r boxplots EMT score Hallmark vs classification}
+
+create_classif_boxplots <- function(classif, classif_col, df1, df2) {
+  p1 <- ggplot(df1, aes(x = .data[[classif_col]], y=EMT_score, fill=.data[[classif_col]])) + 
+  geom_boxplot(notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste0("EMT Hallmark score", classif, "LapNet"))
+  
+  p2 <- ggplot(df2, aes(x = .data[[classif_col]], y=EMT_score, fill=.data[[classif_col]])) + 
+  geom_boxplot(notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste0("EMT Hallmark score", classif, "Control"))
+  
+  grid.arrange(p1, p2, nrow = 1)
+}
+
+for (classif in c('collisson', 'moffitt', 'bailey')) {
+  classif_col <- paste0("Classif_", classif)
+  classif_df_control <- read.csv(paste0('/home/eugenie-modolo/Documents/Lapnet/donnees_control_LPAC/251009_', classif, '_classification.csv'), sep=",", header = TRUE, row.names = 1)
+  match_index <- match(rownames((coldata_control)), rownames(classif_df_control))
+  coldata_control$toto <- classif_df_control[match_index, 'Predicted.subtype']
+  names(coldata_control)[names(coldata_control) == 'toto'] <- classif_col
+  create_classif_boxplots(classif, classif_col, coldata_lapnet, coldata_control)
+}
+
+```

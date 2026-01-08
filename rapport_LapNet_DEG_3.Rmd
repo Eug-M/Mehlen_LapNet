@@ -1,0 +1,928 @@
+---
+title: "LapNet DEG - analyse des DEGs obtenus"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Lapnet/"
+setwd(path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies and functions, results = "hide", include=F}
+# BiocManager::install("mixOmics")
+library("DESeq2")
+library("rtracklayer")
+library("SummarizedExperiment")
+library("pheatmap")
+library("RColorBrewer")
+library("ggrepel")
+library("apeglm")
+library("DEGreport")
+library(fgsea)
+library(clusterProfiler)
+
+library("dplyr")
+library("ggplot2")
+library('gplots')
+library("gridExtra")
+library("factoextra")
+library(msigdbr)
+library(tibble)
+library("ComplexHeatmap")
+library(circlize)
+# library(genekitr)
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+# Objectif
+
+Etudier les gènes différentiellement exprimés sur les données LapNet.<br/> 
+Nous retirons de l'étude le sample 06-006, qui a seulement 96% de gènes avec une expression non-nulle.<br/>
+
+```{r creating dataframes}
+
+# colData
+coldata <- read.csv('./colData_LapNet.csv', sep=";")
+coldata$Best_response_2 <- case_when(
+  coldata$Best_response == "SD" ~ "SD_PD",
+  coldata$Best_response == "PD" ~ "SD_PD", 
+  coldata$Best_response == "PR" ~ "PR",
+  TRUE ~ NA_character_  # for any unexpected values
+)
+coldata <- subset( coldata, select = -Best_response )
+
+# scale and center the numeric columns
+numeric_columns <- c('Age', 'Height', 'Weight', 'BMI', 'Size_lesion_C0', 'Size_lesion_C4', 'Size_lesion_C8', 'Size_lesion_C12', 'best_lesion_perc', 'OS', 'PFS', 'Surgery', 'QC_duplication_perc', 'QC_aligned_M', 'QC_uniq_aligned')
+for (numeric_col in numeric_columns) {
+  coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
+}
+coldata <- subset( coldata, select = - c(Age, Height, Weight, BMI, Size_lesion_C0, Size_lesion_C4, Size_lesion_C8, Size_lesion_C12, best_lesion_perc, OS, PFS, Surgery, QC_duplication_perc, QC_aligned_M, QC_uniq_aligned))
+#coldata[paste0(numeric_columns, "_cr")] <- lapply(coldata[numeric_columns], scale)
+# convert to factors the non-numeric columns
+factor_columns <- colnames(coldata) %!in% numeric_columns
+coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
+
+# countData (gene counts, not transcript's)
+counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# we need integers for DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+#counts_genes <- as.matrix(counts_genes)
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+
+count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
+# rownames(count_matrix) <- count_matrix_pcg$gene_name  # Gene names become row names
+# duplicated gene symbols: we make the sum of their raw counts (hypothesis: they code for the same protein function)
+# count_matrix <- rowsum(count_matrix, rownames(count_matrix))
+# dup_genes <- count_matrix_pcg[duplicated(count_matrix_pcg$gene_name),'gene_name']
+# rownames(count_matrix_pcg)[count_matrix_pcg$gene_name == 'TUBB']
+
+basic_coldata <- data.frame(coldata, row.names = count_columns)
+for (col in colnames(basic_coldata)) {
+  var_data <- basic_coldata[[col]]
+  if (is.factor(var_data) && endsWith(col, '_cr')) {
+    basic_coldata[col] <- as.numeric(as.vector(var_data))
+  }
+}
+# checking that the rows of the metadata table and the columns of the expression matrix must have the same name and same order
+# print(c('checkpoint, TRUE if data importation is correct: ', sum(rownames(basic_coldata) == colnames(count_matrix)) == length(rownames(basic_coldata))))
+
+# # Removing columns with NAs for DESeq2
+# coldata_wo_NA <- subset( basic_coldata, select = -c(Size_lesion_C8, Size_lesion_C12, Surgery) )
+
+# draw basic_coldata table
+as.matrix(basic_coldata) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(basic_coldata),fontSize = '80%')
+
+
+# removing 06-006 
+coldata_28 <- basic_coldata[basic_coldata$SampleID != "06-006",]
+count_matrix_28 <- count_matrix[,basic_coldata$SampleID != "06-006"]
+
+coldata_22 <- coldata_28[coldata_28$Time == "pre",]
+count_matrix_22 <- count_matrix_28[, coldata_28$Time == "pre"]
+
+coldata_8 <- coldata_28[which(coldata_28$SampleID %in% c("01-007", "02-001", "02-003", "02-014")),]
+count_matrix_8 <- count_matrix_28[, which(coldata_28$SampleID %in% c("01-007", "02-001", "02-003", "02-014"))]
+
+
+# Set thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+
+# # Set seed for reproducibility
+# set.seed(42)
+
+```
+
+Checkpoints: <br/>
+- nous obtenons `r sum(duplicated(rownames(count_matrix)))` gènes au nom dupliqués, sur un total de `r nrow(count_matrix)` protein-coding gènes.<br/>
+- vérification que les samples sont les mêmes (même nombre et même ordre) entre coldata et la matrice de comptage : `r sum(rownames(basic_coldata) == colnames(count_matrix)) == length(rownames(basic_coldata))`.<br/>
+
+
+# Analyse des 22 samples pre : quels sont les marqueurs de meilleure survie ?
+
+Recherche et analyse des gènes DE des 23 samples pre.<br/>
+
+##  Recherche des DEGs 
+
+Design 1 : ~ Age_cr + Prog_status <br/>
+Design 2 : ~ Age_cr + QC_duplication_perc_cr + Prog_status <br/>
+
+```{r DEGs 22 samples}
+
+# coldata_22 <- basic_coldata[basic_coldata$Time == "pre",]
+# count_matrix_22 <- count_matrix[, basic_coldata$Time == "pre"]
+
+design_22 <- as.formula("~ Age_cr + Prog_status")
+# coef_22 <- "Prog_status_1_vs_0"
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_22,
+  colData = coldata_22,
+  design = design_22
+)
+
+dds <- DESeq(dds)
+
+# norm.count <- as.data.frame(counts(dds_prepost, normalized=TRUE))
+
+# connaître le dernier coef de dds
+# resultsNames(dds)
+  
+res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+resOrdered <- res[order(res$padj), ]
+selected_genes_22 <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+
+# resLFC <- lfcShrink(dds, coef=coef_23, type="apeglm", lfcThreshold=lfc.cutoff) # apeglm has less bias than "normal"
+# /!\ Using contrast forms an expanded model matrix, treating all factor levels equally, and averages over all distances between all pairs of factor levels to estimate the prior. Using coef, means looking only at that column of the model matrix -> à modifier pour utiliser contrast !!
+# resLFCordered <- resLFC[order(resLFC$svalue), ]
+# selected_genesLFC_22 <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+
+# checking the DESeq2 dispersion 
+plotDispEsts(dds, main=paste("DESeq2 dispersion plot pre", design_23))
+  
+# looking at the number of outliers
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance pre", design_23))
+  
+# MA-plot
+plotMA(resLFC, ylim=c(-2,2), main=paste("plotMA pre", design_22))
+
+# comparaison des designs (à refaire tourner avec 22 samples !!) : avec "~ Age_cr + QC_aligned_M_cr + Prog_status" : 31 DEGs en commun avec le design_22, 197 nouveaux, et 8 seulement avec design_22
+
+
+```
+
+
+```{r cross-validation 22 samples}
+
+# Cross-validation to check DEGs reproducibility
+cv_samples_DEGs_22 <- function(count_matrix, coldata, design, padj.cutoff=0.05, lfc.cutoff=0.58) { #, coef
+  
+  # set.seed(123)
+  cv_results <- list()
+  cv_results_LFC <- list()
+
+  for (outlier in 1:ncol(count_matrix)) {
+    col_ind <- 1:ncol(count_matrix)
+    indexes <- col_ind[-outlier]
+    
+    tryCatch({
+      # Train on training set
+      dds <- DESeqDataSetFromMatrix(
+      countData = count_matrix[, indexes],
+        colData = coldata[indexes, ],
+        design = as.formula(design)
+      )
+      dds <- DESeq(dds, quiet = TRUE)
+      
+      res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
+      resOrdered <- res[order(res$padj), ]
+      selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+      cv_results[[outlier]] <- selected_genes
+      
+      # resLFC <- lfcShrink(dds, coef=coef, type="apeglm", lfcThreshold=lfc.cutoff)
+      # resLFCordered <- resLFC[order(resLFC$svalue), ]
+      # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+      # cv_results_LFC[[outlier]] <- selected_genesLFC
+      
+    })
+    }
+  result <- list('all' = cv_results, 'LFC' = cv_results_LFC)
+  return(result)
+}
+
+check_repro_22 <- cv_samples_DEGs_22(count_matrix_22, coldata_22, "~ QC_duplication_perc_cr + Age_cr + Best_response_2")#, coef='Prog_status_1_vs_0')
+
+min_nb <- 18
+all_DEGs <- do.call(c, check_repro_22$all)
+number_by_DEG <- table(all_DEGs)
+DEGs_in_common <- list()
+for (DEG in rownames(number_by_DEG)) {
+  if (number_by_DEG[[DEG]] > min_nb) {
+    DEGs_in_common <- append(DEGs_in_common, DEG)
+  }
+}
+DEGs_in_common <- do.call(c, DEGs_in_common)
+
+```
+
+
+
+# Analyse des 28 samples : 22 pre vs 6 post
+
+Recherche et analyse des gènes DE entre les 22 samples pre et les 6 samples post.<br/>
+
+Design sans cross-validation : ~ Age_cr + Time <br/>
+Design avec cross-validation : ~ QC_duplication_perc_cr + Age_cr + Time <br/>
+
+##  Recherche des DEGs 
+
+```{r DEGs 28 samples}
+
+design_28 <- as.formula("~ Age_cr + Time")
+# coef_28 <- "Time_post_vs_pre"
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_28,
+  colData = coldata_28,
+  design = design_28
+)
+  
+dds$Time <- relevel(dds$Time, ref = "pre")
+dds <- DESeq(dds)
+
+# norm.count_28 <- as.data.frame(counts(dds_prepost, normalized=TRUE))
+norm_count_28 <- assay(vst(dds, blind=FALSE))
+# keep_mean <- rowMeans(norm_counts) > 10
+# keep_zero <- rowSums(norm_counts == 0) / ncol(norm_counts) <= 0.90
+# dds_filt <- dds[keep_mean & keep_zero, ]
+  
+res_28 <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)#, contrast=c("Time", "post", "pre")) 
+resOrdered_28 <- res_28[order(res_28$padj), ]
+selected_genes_28 <- rownames(resOrdered_28[which(resOrdered_28$padj < padj.cutoff), ])
+
+resLFC_28 <- lfcShrink(dds, coef=3, type="apeglm")#, lfcThreshold=lfc.cutoff)#, svalue=FALSE)
+# resLFCordered <- resLFC[order(resLFC$svalue), ]
+# selected_genesLFC_28 <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+resLFCordered_28 <- resLFC_28[order(resLFC_28$padj), ]
+selected_genesLFC_28 <- rownames(resLFCordered_28[which(resLFCordered_28$padj < padj.cutoff), ])
+
+# checking the DESeq2 dispersion 
+plotDispEsts(dds, main=paste("DESeq2 dispersion plot 28", as.character(design_28)[2]))
+  
+# looking at the number of outliers
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance 28", as.character(design_28)[2]))
+
+# MA-plot
+plotMA(resLFC_28, ylim=c(-2,2), main=paste("plotMA 28", as.character(design_28)[2]))
+
+
+DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_28, rownames(counts_genes))]
+table_28 <- data.frame(selected_genes_28, DEGs_gene_symbols, res_28[which(row.names(res_28) %in% selected_genes_28), "stat"], res_28[which(row.names(res_28) %in% selected_genes_28), "padj"], res_28[which(row.names(res_28) %in% selected_genes_28), "log2FoldChange"])
+colnames(table_28) <- c("ENSG", "gene_symbol", "stat", "padj", "log2FoldChange")
+table_28$ENSG_clean <- sub("\\..*", "", table_28$ENSG)
+table_28 <- table_28[order(table_28$log2FoldChange), ]
+
+# draw DEGs table
+as.matrix(table_28) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(table_28),fontSize = '80%')
+
+```
+
+
+```{r cross-validation 28}
+
+cv_samples_DEGs_28 <- function(count_matrix, coldata, design, padj.cutoff=0.05, lfc.cutoff=0.58) { #, coef
+  
+  # set.seed(123)
+  cv_results <- list()
+  cv_results_LFC <- list()
+
+  for (outlier in 1:ncol(count_matrix)) {
+    col_ind <- 1:ncol(count_matrix)
+    indexes <- col_ind[-outlier]
+    
+    tryCatch({
+      # Train on training set
+      dds <- DESeqDataSetFromMatrix(
+      countData = count_matrix[, indexes],
+        colData = coldata[indexes, ],
+        design = as.formula(design)
+      )
+      dds$Time <- relevel(dds$Time, ref = "pre")
+      dds <- DESeq(dds, quiet = TRUE)
+      
+      res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
+      resOrdered <- res[order(res$padj), ]
+      selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+      cv_results[[outlier]] <- selected_genes
+      
+      # resLFC <- lfcShrink(dds, coef=coef, type="apeglm", lfcThreshold=lfc.cutoff)
+      # resLFCordered <- resLFC[order(resLFC$svalue), ]
+      # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+      # cv_results_LFC[[outlier]] <- selected_genesLFC
+      
+    })
+    }
+  result <- list('all' = cv_results, 'LFC' = cv_results_LFC)
+  return(result)
+}
+
+check_repro_28 <- cv_samples_DEGs_28(count_matrix_28, coldata_28, "~ QC_duplication_perc_cr + Age_cr + Time")#, coef='Prog_status_1_vs_0')
+
+min_nb <- 27 # 20
+all_DEGs <- do.call(c, check_repro_28$all)
+number_by_DEG <- table(all_DEGs)
+DEGs_in_common_28 <- list()
+for (DEG in rownames(number_by_DEG)) {
+  if (number_by_DEG[[DEG]] > min_nb) {
+    DEGs_in_common_28 <- append(DEGs_in_common_28, DEG)
+  }
+}
+DEGs_in_common_28 <- do.call(c, DEGs_in_common_28)
+DEGs_gene_symbols <- counts_genes$gene_name[match(DEGs_in_common_28, rownames(counts_genes))]
+
+design_28_cv <- as.formula("~ QC_duplication_perc_cr + Age_cr + Time")
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_28,
+  colData = coldata_28,
+  design = design_28_cv
+)
+dds$Time <- relevel(dds$Time, ref = "pre")
+dds <- DESeq(dds)
+res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
+
+table_cv_28 <- data.frame(DEGs_in_common_28, DEGs_gene_symbols, res[which(row.names(res) %in% DEGs_in_common_28), "stat"], res[which(row.names(res) %in% DEGs_in_common_28), "padj"], res[which(row.names(res) %in% DEGs_in_common_28), "log2FoldChange"])
+colnames(table_cv_28) <- c("ENSG", "gene_symbol", "stat", "padj", "log2FoldChange")
+table_cv_28$ENSG_clean <- sub("\\..*", "", table_cv_28$ENSG)
+table_cv_28 <- table_cv_28[order(table_cv_28$log2FoldChange), ]
+
+# draw DEGs table
+as.matrix(table_cv_28) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(table_cv_28),fontSize = '80%')
+
+# nombre de DEGs en commun selon le design, en prenant min_nb = 28 : 
+# ~ Time :                                    5 DEGs :  "ENSG00000096060.16" "ENSG00000140323.7"  "ENSG00000142303.15" "ENSG00000197496.7"  "ENSG00000284454.2" 
+# ~ Age_cr + Time :                           10 DEGs : "ENSG00000096060.16" "ENSG00000140323.7"  "ENSG00000142303.15" "ENSG00000197496.7"  "ENSG00000284454.2"  "ENSG00000206513.2"  "ENSG00000236625.8" "ENSG00000263309.6"  "ENSG00000005001.11" "ENSG00000161381.15"
+# ~ QC_duplication_perc_cr + Age_cr + Time :  21 DEGs : "ENSG00000096060.16" "ENSG00000140323.7"  "ENSG00000142303.15" "ENSG00000197496.7"  "ENSG00000284454.2"  "ENSG00000206513.2"  "ENSG00000236625.8" "ENSG00000263309.6" "ENSG00000005001.11" "ENSG00000161381.15" "ENSG00000006210.7"  "ENSG00000027001.11" "ENSG00000087128.10" "ENSG00000114554.12" "ENSG00000118242.17" "ENSG00000124313.19"  "ENSG00000125733.19" "ENSG00000135605.14" "ENSG00000137936.19" "ENSG00000235396.5"   "ENSG00000284713.3"
+# ~ Height_cr + QC_duplication_perc_cr + Age_cr + Time :  28 DEGs (pas tous en commun) : "ENSG00000096060.16" "ENSG00000140323.7" "ENSG00000142303.15" "ENSG00000197496.7"  "ENSG00000284454.2" /0\ "ENSG00000005001.11" "ENSG00000161381.15" "ENSG00000006210.7"  "ENSG00000027001.11" "ENSG00000087128.10" "ENSG00000114554.12" "ENSG00000118242.17" "ENSG00000124313.19" "ENSG00000137936.19"  "ENSG00000284713.3" "ENSG00000095713.15" "ENSG00000101440.11" "ENSG00000104518.12"  "ENSG00000163288.14" "ENSG00000169231.14" "ENSG00000183311.16" "ENSG00000186564.6"   "ENSG00000198807.13" "ENSG00000226288.3"  "ENSG00000228964.10" "ENSG00000263956.9" "ENSG00000284218.2"  "ENSG00000287725.2" 
+# ~ Sex + QC_duplication_perc_cr + Age_cr + Time :        28 DEGs (pas tous en commun) : "ENSG00000096060.16" "ENSG00000140323.7"  "ENSG00000142303.15" "ENSG00000197496.7"  "ENSG00000206513.2" "ENSG00000124313.19"  "ENSG00000125733.19" "ENSG00000135605.14" "ENSG00000137936.19" /0\ "ENSG00000284454.2" "ENSG00000005001.11" "ENSG00000006210.7"  "ENSG00000011347.11" "ENSG00000027001.11" "ENSG00000087128.10" "ENSG00000087250.10" "ENSG00000099984.12" "ENSG00000101440.11" "ENSG00000111432.5"  "ENSG00000114554.12" "ENSG00000118242.17" "ENSG00000127129.11" "ENSG00000161381.15"  "ENSG00000236625.8"  "ENSG00000269741.5" "ENSG00000275723.4"  "ENSG00000284713.3"  "ENSG00000288796.1"
+# ~ SampleID + Time :  43 DEGs : "ENSG00000096060.16" /0\ "ENSG00000142303.15" "ENSG00000284454.2" "ENSG00000161381.15" "ENSG00000004399.14" "ENSG00000053900.12" "ENSG00000068024.19" "ENSG00000090382.7"  "ENSG00000101104.14" "ENSG00000102854.17" "ENSG00000109911.20" "ENSG00000110799.15" "ENSG00000113721.15" "ENSG00000114019.16" "ENSG00000115421.14" "ENSG00000117983.17" "ENSG00000122515.17" "ENSG00000124107.5"  "ENSG00000126822.19" "ENSG00000130635.18" "ENSG00000143367.18" "ENSG00000143772.12" "ENSG00000148346.13" "ENSG00000149591.18" "ENSG00000151388.11" "ENSG00000155093.20" "ENSG00000162591.18" "ENSG00000163359.18" "ENSG00000164597.16" "ENSG00000165699.17" "ENSG00000167315.19" "ENSG00000168631.15" "ENSG00000175538.12" "ENSG00000175820.4"  "ENSG00000184445.12" "ENSG00000197381.19" "ENSG00000204291.13" "ENSG00000215182.8"  "ENSG00000233024.7"  "ENSG00000263956.9"  "ENSG00000266338.8"  "ENSG00000271383.10"  "ENSG00000291995.1"
+
+```
+
+## Etude des DEGs sans cross-validation : {.tabset}
+
+### Volcano plot
+
+```{r Volcano 28}
+
+# without shrink
+with(resOrdered_28, plot(log2FoldChange, -log10(padj), pch=20, main="Volcano plot NOshrink", cex=0.5))
+with(subset(resOrdered_28, padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
+with(subset(resOrdered_28, abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
+with(subset(resOrdered_28, padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+
+# shrinked
+with(resLFCordered_28, plot(log2FoldChange, -log10(padj), pch=20, main="Volcano plot shrinked", cex=0.5))
+with(subset(resLFCordered_28, padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
+with(subset(resLFCordered_28, abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
+with(subset(resLFCordered_28, padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+
+```
+
+<br/>
+<br/>
+
+### Heatmap des DEGs
+
+```{r Heatmap DEG 28}
+
+# heatmap Nico des DEGs par sample
+distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_28, rownames(counts_genes))]
+matrix_heatmap_28 <- norm_count_28[which(rownames(norm_count_28) %in% selected_genes_28),]
+rownames(matrix_heatmap_28) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_28), rownames(counts_genes))], unique = T)
+heatmap.2(as.matrix(matrix_heatmap_28), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+# heatmap Emilie avec ComplexHeatmap (/!\ essayer méthode Roxane !!!)
+## cluster colors 
+time_col <- c("turquoise","orangered")
+names(time_col) <- c('pre', 'post')
+age_col <- rainbow(length(unique(coldata_28$Age_cr)))
+names(age_col) <- sort(unique(coldata_28$Age_cr))
+QC_col <- rainbow(length(unique(coldata_28$QC_duplication_perc_cr)))
+names(QC_col) <- sort(unique(coldata_28$QC_duplication_perc_cr))
+sex_col <- c("pink","cyan")
+names(sex_col) <- c("F","M")
+prog_col <- c("grey","black")
+names(prog_col) <- c("0","1")
+death_col <- c("grey","black")
+names(death_col) <- c("0","1")
+br2_col <- c("grey","black")
+names(br2_col) <- c("PR","SD_PD")
+
+## cluster legend
+column_ha = HeatmapAnnotation(
+  Time=coldata_28$Time,
+  # Age=coldata_28$Age_cr, 
+  # QC=coldata_28$QC_duplication_perc_cr,
+  Gender=coldata_28$Sex,
+  # Progress=coldata_28$Prog_status,
+  Death=coldata_28$Death_status,
+  Best_response=coldata_28$Best_response_2,
+  col=list(Time=time_col,Gender=sex_col,Best_response=br2_col,Death=death_col#,Age=age_col,QC=QC_col,Progress=prog_col
+  ))
+
+## heatmap
+scaled_mat <- t(scale(t(as.matrix(matrix_heatmap_28))))
+h <-  Heatmap(scaled_mat,#norm_count_28[which(rownames(norm_count_28) %in% selected_genes_28),],
+              col=colorRamp2(c(-4,0,4), c("blue", "white", "red")),
+              clustering_distance_columns  = "spearman",#pearson
+              clustering_method_columns = "ward.D2",
+              clustering_distance_rows  = "spearman",#pearson
+              clustering_method_rows = "ward.D2",
+              # row_km = 2, , column_km = 2,
+              row_split = 2, column_split = 2,
+              top_annotation = column_ha)
+draw(h)
+
+```
+
+<br/>
+<br/>
+
+### ORA (Over-Enrichment Analysis)
+
+```{r ORA 28}
+
+# defining H, C2 (and C5 ?)
+# gsets_msigdb_h <- msigdbr(species = "human", collection = "H")
+# msigdb.genes.setsH <- gsets_msigdb_h %>% dplyr::select(gs_name, gene_symbol, ensembl_gene) %>% as.data.frame()
+# msigdb.genes.setsH$gs_name <- as.factor(msigdb.genes.setsH$gs_name)
+# Hallmark <- as.list(1)
+# for (i in 1:nlevels(msigdb.genes.setsH$gs_name)){
+#   Hallmark[[i]] <- cbind(msigdb.genes.setsH[which(msigdb.genes.setsH$gs_name == levels(msigdb.genes.setsH$gs_name)[i]), 3])
+# }
+# names(Hallmark) <- levels(msigdb.genes.setsH$gs_name)
+# 
+# gsets_msigdb_c2 <- msigdbr(species = "human", collection = "C2", subcollection = "CP:REACTOME")
+# msigdb.genes.setsC2reactome <- gsets_msigdb_c2 %>% dplyr::select(gs_name, gene_symbol, ensembl_gene) %>% as.data.frame()
+# msigdb.genes.setsC2reactome$gs_name <- as.factor(msigdb.genes.setsC2reactome$gs_name)
+# C2 <- as.list(1)
+# for (i in 1:nlevels(msigdb.genes.setsC2reactome$gs_name)){
+#   C2[[i]] <- cbind(msigdb.genes.setsC2reactome[which(msigdb.genes.setsC2reactome$gs_name == levels(msigdb.genes.setsC2reactome$gs_name)[i]), 3])
+# }
+# names(C2) <- levels(msigdb.genes.setsC2reactome$gs_name)
+
+gsets_msigdb_h <- msigdbr(species = "human", collection = "H")
+gsets_msigdb_c2 <- msigdbr(species = "human", collection = "C2")
+gsets_msigdb_c5 <- msigdbr(species = "human", collection = "C5")
+msigdb.genes.setsH <- gsets_msigdb_h %>% dplyr::select(gs_name,ensembl_gene) %>% as.data.frame()
+msigdb.genes.setsC2 <- gsets_msigdb_c2 %>% dplyr::select(gs_name,ensembl_gene) %>% as.data.frame()
+msigdb.genes.setsC5 <- gsets_msigdb_c5 %>% dplyr::select(gs_name,ensembl_gene) %>% as.data.frame()
+
+# using enricher from clusterProfiler 
+clustP_query <- function(genes, genesets, universe = NULL, adj_p_cutoff) { 
+  result <- list() 
+  if (is.vector(genes) && length(genes) > 0 && !all(genes == '')) 
+    { 
+    universe.gene.pathway <- universe 
+    other.genes <- universe.gene.pathway[!universe.gene.pathway %in% genesets$gene_symbol] 
+    other.genes <- na.omit(unique(other.genes)) 
+    other.genes.df <- cbind(rep("other.genes", length(other.genes)), other.genes) 
+    colnames(other.genes.df) <- colnames(genesets) 
+    genes.sets.all <- rbind(genesets, other.genes.df)
+
+    res <-
+      enricher(
+        genes,
+        universe = universe,
+        TERM2GENE = genes.sets.all,
+        qvalueCutoff = adj_p_cutoff,
+        maxGSSize=1000
+      )
+    result <- as.data.frame(res)
+  } else {
+    warning(paste0('genes must be a non-empty vector of gene names'))
+  }
+  return(result)
+}
+
+# genesets <- data.frame(table_28$ENSG_clean, rep('28_WOcv', length(table_28$ENSG_clean)))
+universe <- sub("\\..*", "", rownames(count_matrix_28))
+DEGs_up <- table_28[which(table_28$log2FoldChange >0),'ENSG_clean']
+DEGs_down <- table_28[which(table_28$log2FoldChange <0),'ENSG_clean']
+for (geneset in c(msigdb.genes.setsH, msigdb.genes.setsC2, msigdb.genes.setsC5)) {
+  res_Enricher_up <- clustP_query(DEGs_up, geneset, universe, padj.cutoff)
+  if (nrow(res_Enricher_up) > 0) {
+    
+  }
+  res_Enricher_down <- clustP_query(DEGs_down, geneset, universe, padj.cutoff)
+  if (nrow(res_Enricher_down) > 0) {
+    
+  }
+}
+# res <- enricher(genes, universe=universe, TERM2GENE=genes.sets.all,  qvalueCutoff=adj_p_cutoff,maxGSSize=1000)
+toto <- enricher(
+     sub("\\..*", "", rownames(count_matrix_28)[1:1000]),
+     universe = universe,
+     TERM2GENE = genes.sets.all,
+     qvalueCutoff = padj.cutoff,
+     maxGSSize=1000
+ )
+df <- na.omit(toto[1:10,c('Description', 'GeneRatio', 'RichFactor', 'p.adjust')])
+df$p.adjust.num <- -log(as.numeric(df$p.adjust),10)
+df <- df[order(df$p.adjust.num),]
+
+
+
+# DEGs GO enrichment
+# sig_genes <- as.character(pathway[which(pathway$svalue < 0.05),'ENSG_clean'])
+sig_genes <- as.character(pathway[which(pathway$padj < 0.05),'ENSG_clean'])
+all_genes <- as.character(pathway$ENSG_clean)
+ego <- enrichGO(gene = sig_genes, 
+                universe = all_genes,
+                keyType = "ENSEMBL", # si ça marche pas, taper : keytype
+                OrgDb = org.Hs.eg.db, 
+                ont = "ALL", # "BP"
+                pAdjustMethod = "BH", 
+                qvalueCutoff = 0.05, 
+                readable = TRUE)
+dotplot(ego, showCategory=50)
+emapplot(ego, showCategory = 50)
+
+# using fgsea
+genes_fg <- sub("\\..*", "", selected_genes_28)
+universe_bg <- sub("\\..*", "", rownames(count_matrix_28))
+foraRes <- fora(genes=genes_fg, universe=universe_bg, pathways=Hallmark)
+topPathways <- foraRes[head(order(pval), n=10), pathway]
+plotGseaTable(Hallmark[topPathways], genes_fg, foraRes, 
+              gseaParam=0.5)
+
+```
+
+<br/>
+<br/>
+
+### GSEA
+
+```{r GSEA 28}
+
+# /!\ for functional analysis tools such as GSEA which require fold change values as input you want to provide shrunken values (https://ciri.gitbiopages.ens-lyon.fr/bibs/carine/rnaseq_analysis_training/Session_6.html)
+
+# DEGs > 0
+
+# à modifier pour séparer en UP et DOWN !!!
+pathway <- res_28[!is.na(res_28$padj), ]
+pathway$ENSG <- rownames(pathway)
+pathway$ENSG_clean <- sub("\\..*", "", pathway$ENSG)
+pathway$padjustlog10 <- -log10(pathway$padj)
+pathway$rank <- pathway$padjustlog10 * sign(pathway$log2FoldChange) # from https://www.biostars.org/p/9526168/
+# pathway <- pathway[order(pathway$log2FoldChange, decreasing = T),]
+# rankgene <- deframe(pathway[, c("ENSG_clean", "rank")])
+pathway <- pathway[order(pathway$stat, decreasing = T),]
+rankgene_1 <- setNames(pathway$stat, pathway$ENSG_clean)
+pathway <- pathway[order(pathway$rank, decreasing = T),]
+rankgene_2 <- setNames(pathway$rank, pathway$ENSG_clean)
+# rankgene <- deframe(pathway[, c("ENSG_clean", "log2FoldChange")])
+
+fgseaRes <- fgsea(pathways = Hallmark, 
+                  stats    = rankgene_1,
+                  minSize  = 10,#15
+                  maxSize  = 1000)#500
+# fgseaResTidy <- fgseaRes %>%
+#   as_tibble() %>%
+#   arrange(desc(NES))
+# ggplot(fgseaResTidy, aes(reorder(pathway, NES), NES)) +
+#   geom_col(aes(fill=padj<0.05)) +
+#   coord_flip() +
+#   labs(x="Pathway", y="Normalized Enrichment Score",
+#        title="Hallmark pathways NES from GSEA") + 
+#   theme_minimal()
+topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=10), pathway]
+topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+plotGseaTable(Hallmark[topPathways], rankgene_1, fgseaRes, 
+              gseaParam=0.5)
+collapsedPathways <- collapsePathways(fgseaRes[order(pval)][padj < 0.01], 
+                                      Hallmark, rankgene_1)
+mainPathways <- fgseaRes[pathway %in% collapsedPathways$mainPathways][
+                         order(-NES), pathway]
+plotGseaTable(Hallmark[mainPathways], rankgene_1, fgseaRes, 
+              gseaParam = 0.5)
+
+fgseaRes <- fgsea(pathways = C2, 
+                  stats    = rankgene_1,
+                  minSize  = 10,#15
+                  maxSize  = 1000)#500
+# fgseaResTidy <- fgseaRes %>%
+#   as_tibble() %>%
+#   arrange(desc(NES))
+# ggplot(fgseaResTidy, aes(reorder(pathway, NES), NES)) +
+#   geom_col(aes(fill=NES < 0)) +
+#   coord_flip() +
+#   labs(x="Pathway", y="Normalized Enrichment Score",
+#        title="Reactome pathways NES from GSEA") + 
+#   theme_minimal()
+topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=10), pathway]
+topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+plotGseaTable(C2[topPathways], rankgene_1, fgseaRes, 
+              gseaParam=0.5)
+collapsedPathways <- collapsePathways(fgseaRes[order(pval)][padj < 0.01], 
+                                      C2, rankgene_1)
+mainPathways <- fgseaRes[pathway %in% collapsedPathways$mainPathways][
+                         order(-NES), pathway]
+plotGseaTable(C2[mainPathways], rankgene_1, fgseaRes, 
+              gseaParam = 0.5)
+
+# GO avec un Ridgeplot
+gse <- gseGO(geneList=rankgene_1, 
+              ont ="ALL", #"BP"
+              keyType = "ENSEMBL", 
+              nPerm = 10000, 
+              minGSSize = 3, 
+              maxGSSize = 800, 
+              pvalueCutoff = 0.05, 
+              verbose = TRUE, 
+              OrgDb = org.Hs.eg.db, 
+              pAdjustMethod = "BH" # "none"
+             )
+ridgeplot(gse) + labs(x = "enrichment distribution")
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+# gs <- geneset::getMsigdb(org = "human",category = "H")
+# gse <- genGSEA(genelist = rankgene, geneset = gs)
+
+
+
+```
+
+<br/>
+<br/>
+
+```{r XXX}
+
+
+
+```
+
+<br/>
+<br/>
+
+## Etude des DEGs avec cross-validation : {.tabset}
+
+XXXX
+
+
+# Analyse des 4 paires pre - post
+
+Recherche et analyse des gènes DE des 4 paires de samples pre - post.<br/>
+
+Design : ~ Age_cr + QC_aligned_M_cr + Time <br/>
+
+## Recherche des DEGs
+
+```{r DEGs 8 samples}
+
+coldata_8 <- basic_coldata[which(basic_coldata$SampleID %in% c("01-007", "02-001", "02-003", "02-014")),]
+count_matrix_8 <- count_matrix[, which(basic_coldata$SampleID %in% c("01-007", "02-001", "02-003", "02-014"))]
+
+design_8 <- as.formula("~ SampleID + Time")
+# coef_8 <- "Time_post_vs_pre"
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_8,
+  colData = coldata_8,
+  design = design_8
+)
+
+dds$Time <- relevel(dds$Time, ref = "pre")
+dds <- DESeq(dds)
+
+norm.count_8 <- as.data.frame(counts(dds, normalized=TRUE))
+
+res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+resOrdered <- res[order(res$padj), ]
+selected_genes_8 <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+
+# resLFC <- lfcShrink(dds, coef=coef_8, type="apeglm")#, lfcThreshold=lfc.cutoff)
+# resLFCordered <- resLFC[order(resLFC$padj), ]
+# selected_genesLFC_8 <- rownames(resLFCordered[which(resLFCordered$padj < padj.cutoff), ])
+
+# checking the DESeq2 dispersion 
+plotDispEsts(dds, main=paste("DESeq2 dispersion plot pairs", design_name))
+
+# looking at the number of outliers
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance pairs", design_name))
+
+# MA-plot
+plotMA(resLFC, ylim=c(-2,2), main=paste("plotMA pairs", design_name))
+
+# venn(selected_genes_list_8)#, main="Overlap of DEGs across designs")
+# venn(selected_genesLFC_list_8)
+
+
+```
+
+
+```{r cross-validation 8}
+
+cv_samples_DEGs_pairs <- function(count_matrix, coldata, design, padj.cutoff=0.05, lfc.cutoff=0.58) { #, coef
+  
+  # set.seed(123)
+  cv_results <- list()
+  cv_results_LFC <- list()
+
+  for (outlier in unique(coldata$SampleID)) {
+    # col_ind <- 1:ncol(count_matrix)
+    # indexes <- col_ind[-outlier]
+    
+    tryCatch({
+      # Train on training set
+      dds <- DESeqDataSetFromMatrix(
+      countData = count_matrix[, which(coldata$SampleID != outlier)],
+        colData = coldata[which(coldata$SampleID != outlier), ],
+        design = as.formula(design)
+      )
+      dds$Time <- relevel(dds$Time, ref = "pre")
+      dds <- DESeq(dds, quiet = TRUE)
+      
+      res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
+      resOrdered <- res[order(res$padj), ]
+      selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+      cv_results[[outlier]] <- selected_genes
+      
+      # resLFC <- lfcShrink(dds, coef=coef, type="apeglm", lfcThreshold=lfc.cutoff)
+      # resLFCordered <- resLFC[order(resLFC$svalue), ]
+      # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+      # cv_results_LFC[[outlier]] <- selected_genesLFC
+      
+    })
+    }
+  result <- list('all' = cv_results, 'LFC' = cv_results_LFC)
+  return(result)
+}
+
+check_repro_8 <- cv_samples_DEGs_pairs(count_matrix_8, coldata_8, "~ SampleID + Time")
+
+min_nb <- 1 #2
+all_DEGs <- do.call(c, check_repro_8$all)
+number_by_DEG <- table(all_DEGs)
+DEGs_in_common <- list()
+for (DEG in rownames(number_by_DEG)) {
+  if (number_by_DEG[[DEG]] > min_nb) {
+    DEGs_in_common <- append(DEGs_in_common, DEG)
+  }
+}
+DEGs_in_common <- do.call(c, DEGs_in_common)
+
+```
+
+
+```{r Analyse DEGs 8}
+
+DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_8, rownames(counts_genes))]
+
+# heatmap des DEGs par sample
+distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+matrix_heatmap_8 <- norm.count_8[which(rownames(norm.count_8) %in% selected_genes_8),]
+# matrix_heatmap_8$gene_symbol <- counts_genes$gene_name[match(rownames(matrix_heatmap_8), rownames(counts_genes))]
+# # correction pour le gène dupliqué (à automatiser !)
+# matrix_heatmap_8$gene_symbol[75] = "DDR1."
+# # matrix_heatmap_8$ENSG <- rownames(matrix_heatmap_8)
+# rownames(matrix_heatmap_8) <- matrix_heatmap_8$gene_symbol  
+# matrix_heatmap_8 <- subset(matrix_heatmap_8, select = -gene_symbol)
+rownames(matrix_heatmap_8) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_8), rownames(counts_genes))], unique = T)
+
+heatmap.2(as.matrix(matrix_heatmap_8), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+# GSEA
+gsets_msigdb_h <- msigdbr(species = "human", collection = "H")
+msigdb.genes.setsH <- gsets_msigdb_h %>% dplyr::select(gs_name, gene_symbol, ensembl_gene) %>% as.data.frame()
+msigdb.genes.setsH$gs_name <- as.factor(msigdb.genes.setsH$gs_name)
+Hallmark <- as.list(1)
+for (i in 1:nlevels(msigdb.genes.setsH$gs_name)){
+  Hallmark[[i]] <- cbind(msigdb.genes.setsH[which(msigdb.genes.setsH$gs_name == levels(msigdb.genes.setsH$gs_name)[i]), 3])
+}
+names(Hallmark) <- levels(msigdb.genes.setsH$gs_name)
+
+gsets_msigdb_c2 <- msigdbr(species = "human", collection = "C2", subcollection = "CP:REACTOME")
+msigdb.genes.setsC2reactome <- gsets_msigdb_c2 %>% dplyr::select(gs_name, gene_symbol, ensembl_gene) %>% as.data.frame()
+msigdb.genes.setsC2reactome$gs_name <- as.factor(msigdb.genes.setsC2reactome$gs_name)
+C2 <- as.list(1)
+for (i in 1:nlevels(msigdb.genes.setsC2reactome$gs_name)){
+  C2[[i]] <- cbind(msigdb.genes.setsC2reactome[which(msigdb.genes.setsC2reactome$gs_name == levels(msigdb.genes.setsC2reactome$gs_name)[i]), 3])
+}
+names(C2) <- levels(msigdb.genes.setsC2reactome$gs_name)
+
+pathway <- resLFC[-which(is.na(resLFC$padj)), ]
+pathway$ENSG <- rownames(pathway)
+pathway$ENSG_clean <- sub("\\..*", "", pathway$ENSG)
+pathway$padjustlog10 <- -log10(pathway$padj)
+pathway$rank <- pathway$padjustlog10*(pathway$log2FoldChange/abs(pathway$log2FoldChange))
+pathway <- pathway[order(pathway$rank, decreasing = T),]
+rankgene <- deframe(pathway[, c("ENSG_clean", "log2FoldChange")])
+
+fgseaRes <- fgsea(pathways = Hallmark, 
+                  stats    = rankgene,
+                  minSize  = 15,
+                  maxSize  = 500)
+fgseaResTidy <- fgseaRes %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+ggplot(fgseaResTidy, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways NES from GSEA") + 
+  theme_minimal()
+
+fgseaRes <- fgsea(pathways = C2, 
+                  stats    = rankgene,
+                  minSize  = 15,
+                  maxSize  = 500)
+
+fgseaResTidy <- fgseaRes %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+```
+
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

@@ -1,0 +1,1810 @@
+---
+title: "LapNet DEG - choix des designs"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Lapnet/"
+setwd(path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies and functions, results = "hide", include=F}
+# BiocManager::install("mixOmics")
+library("DESeq2")
+library("rtracklayer")
+library("SummarizedExperiment")
+library("pheatmap")
+library("RColorBrewer")
+library("DEGreport")
+library("apeglm")
+library("ggrepel")
+library("gridExtra")
+
+library("dplyr")
+library("ggplot2")
+library('gplots')
+library("factoextra")
+library("reshape2")
+library("splines")
+library("ComplexHeatmap")
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+# Objectif
+
+Etudier les gènes différentiellement exprimés sur les données LapNet.<br/>
+Remarque : comme un seul individu a une progression de type PD, nous allons grouper cette catégorie avec les individus SD, car le PD devrait 'tirer' les SD vers les moins bons pronostics.<br/>
+
+```{r creating dataframes}
+
+# colData
+coldata <- read.csv('./colData_LapNet.csv', sep=";")
+coldata$Best_response_2 <- case_when(
+  coldata$Best_response == "SD" ~ "SD_PD",
+  coldata$Best_response == "PD" ~ "SD_PD", 
+  coldata$Best_response == "PR" ~ "PR",
+  TRUE ~ NA_character_  # for any unexpected values
+)
+coldata <- subset( coldata, select = -Best_response )
+
+# Adding the Splines and AUC columns for tumor size progression
+# 0. Normalize tumor size at C0
+normalize_by_C0 <- function(coldata,
+                            size_cols = c("Size_lesion_C0", "Size_lesion_C4", 
+                                        "Size_lesion_C8", "Size_lesion_C12"),
+                            time_cols = c("Days_lesion_C0", "Days_lesion_C4", 
+                                        "Days_lesion_C8", "Days_lesion_C12")) {
+  
+  coldata$Size_norm_C0 <- NA
+  coldata$Size_norm_C4 <- NA
+  coldata$Size_norm_C8 <- NA
+  coldata$Size_norm_C12 <- NA
+  
+  for (i in 1:nrow(coldata)) {
+    factor_norm <- 100 / coldata$Size_lesion_C0[i]
+    coldata$Size_norm_C0[i] <- 100
+    coldata$Size_norm_C4[i] <- coldata$Size_lesion_C4[i] * factor_norm
+    coldata$Size_norm_C8[i] <- coldata$Size_lesion_C8[i] * factor_norm
+    coldata$Size_norm_C12[i] <- coldata$Size_lesion_C12[i] * factor_norm
+  }
+  return(coldata)
+}
+
+coldata <- normalize_by_C0(coldata)
+
+# 1. Fit natural splines for each patient
+calculate_tumor_spline <- function(coldata, 
+                                   size_cols = c("Size_norm_C0", "Size_norm_C4", 
+                                                 "Size_norm_C8", "Size_norm_C12"),
+                                   time_cols = c("Days_lesion_C0", "Days_lesion_C4", 
+                                                 "Days_lesion_C8", "Days_lesion_C12"),
+                                   df = 2) {  # degrees of freedom for spline
+  
+  coldata$tumor_spline_slope <- NA
+  # coldata$tumor_spline_curvature <- NA
+  
+  for (i in 1:nrow(coldata)) {
+    sizes <- as.numeric(coldata[i, size_cols])
+    time_points <- as.numeric(coldata[i, time_cols])
+    valid_idx <- !is.na(sizes)
+    
+    if (sum(valid_idx) >= 3) {  # Need at least 3 points for spline
+      valid_sizes <- sizes[valid_idx]
+      valid_times <- time_points[valid_idx]
+      
+      tryCatch({
+        # Fit spline
+        spline_fit <- lm(valid_sizes ~ ns(valid_times, df = min(df, sum(valid_idx) - 1)))
+        
+        # Extract overall trend (coefficient of first spline basis)
+        coldata$tumor_spline_slope[i] <- coef(spline_fit)[2]
+        
+        # If enough df, get curvature (second derivative approximation)
+        # if (length(coef(spline_fit)) > 2) {
+        #   coldata$tumor_spline_curvature[i] <- coef(spline_fit)[3]
+        # }
+      }, error = function(e) {
+        # Skip if spline fails
+      })
+    } else if (sum(valid_idx) == 2) {
+      # Fall back to linear for 2 points
+      valid_sizes <- sizes[valid_idx]
+      valid_times <- time_points[valid_idx]
+      lm_fit <- lm(valid_sizes ~ valid_times)
+      coldata$tumor_spline_slope[i] <- coef(lm_fit)[2]
+    }
+  }
+  
+  return(coldata)
+}
+
+coldata <- calculate_tumor_spline(coldata, df = 2)
+
+# 2. Calculate AUC (total tumor burden over time)
+calculate_tumor_auc <- function(coldata, 
+                                size_cols = c("Size_norm_C0", "Size_norm_C4", 
+                                              "Size_norm_C8", "Size_norm_C12"),
+                                time_cols = c("Days_lesion_C0", "Days_lesion_C4", 
+                                              "Days_lesion_C8", "Days_lesion_C12")) {
+  
+  coldata$tumor_auc <- NA
+  coldata$tumor_auc_normalized <- NA
+  
+  for (i in 1:nrow(coldata)) {
+    sizes <- as.numeric(coldata[i, size_cols])
+    time_points <- as.numeric(coldata[i, time_cols])
+    valid_idx <- !is.na(sizes)
+    
+    if (sum(valid_idx) >= 2) {
+      valid_sizes <- sizes[valid_idx]
+      valid_times <- time_points[valid_idx]
+      
+      # Calculate AUC using trapezoidal rule
+      auc <- 0
+      for (j in 1:(length(valid_times) - 1)) {
+        auc <- auc + (valid_times[j+1] - valid_times[j]) * 
+          (valid_sizes[j] + valid_sizes[j+1]) / 2
+      }
+      
+      coldata$tumor_auc[i] <- auc
+      
+      # Normalize by time duration
+      time_duration <- max(valid_times) - min(valid_times)
+      coldata$tumor_auc_normalized[i] <- auc / time_duration
+    }
+  }
+  
+  return(coldata)
+}
+
+coldata <- calculate_tumor_auc(coldata)
+
+coldata <- subset( coldata, select = - c(Days_lesion_C0, Days_lesion_C4, Days_lesion_C8, Days_lesion_C12, Size_norm_C0))
+
+# scale and center the numeric columns
+numeric_columns <- c('Age', 'Height', 'Weight', 'BMI', 'Size_lesion_C0', 'Size_lesion_C4', 'Size_lesion_C8', 'Size_lesion_C12', 'best_lesion_perc', 'OS', 'PFS', 'Surgery', 'QC_duplication_perc', 'QC_aligned_M', 'QC_uniq_aligned', 'tumor_spline_slope', 'tumor_auc', 'tumor_auc_normalized')
+for (numeric_col in numeric_columns) {
+  coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
+}
+coldata <- subset( coldata, select = - c(Age, Height, Weight, BMI, Size_lesion_C0, Size_lesion_C4, Size_lesion_C8, Size_lesion_C12, best_lesion_perc, OS, PFS, Surgery, QC_duplication_perc, QC_aligned_M, QC_uniq_aligned, tumor_spline_slope, tumor_auc, tumor_auc_normalized))
+#coldata[paste0(numeric_columns, "_cr")] <- lapply(coldata[numeric_columns], scale)
+# convert to factors the non-numeric columns
+factor_columns <- colnames(coldata) %!in% numeric_columns
+coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
+
+# countData (gene counts, not transcript's)
+counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# we need integers for DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+#counts_genes <- as.matrix(counts_genes)
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+
+count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
+# rownames(count_matrix) <- count_matrix_pcg$gene_name  # Gene names become row names
+# duplicated gene symbols: we make the sum of their raw counts (hypothesis: they code for the same protein function)
+# count_matrix <- rowsum(count_matrix, rownames(count_matrix))
+# dup_genes <- count_matrix_pcg[duplicated(count_matrix_pcg$gene_name),'gene_name']
+# rownames(count_matrix_pcg)[count_matrix_pcg$gene_name == 'TUBB']
+
+basic_coldata <- data.frame(coldata, row.names = count_columns)
+for (col in colnames(basic_coldata)) {
+  var_data <- basic_coldata[[col]]
+  if (is.factor(var_data) && endsWith(col, '_cr')) {
+    basic_coldata[col] <- as.numeric(as.vector(var_data))
+  }
+}
+# checking that the rows of the metadata table and the columns of the expression matrix must have the same name and same order
+# print(c('checkpoint, TRUE if data importation is correct: ', sum(rownames(basic_coldata) == colnames(count_matrix)) == length(rownames(basic_coldata))))
+
+# # Removing columns with NAs for DESeq2
+# coldata_wo_NA <- subset( basic_coldata, select = -c(Size_lesion_C8, Size_lesion_C12, Surgery) )
+
+# Set thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+
+# # Set seed for reproducibility
+# set.seed(42)
+
+# removing 06-006 (see below)
+coldata_28 <- basic_coldata[basic_coldata$SampleID != "06-006",]
+count_matrix_28 <- count_matrix[,basic_coldata$SampleID != "06-006"]
+
+coldata_22 <- coldata_28[coldata_28$Time == "pre",]
+count_matrix_22 <- count_matrix_28[, coldata_28$Time == "pre"]
+
+coldata_8 <- coldata_28[which(coldata_28$SampleID %in% c("01-007", "02-001", "02-003", "02-014")),]
+count_matrix_8 <- count_matrix_28[, which(coldata_28$SampleID %in% c("01-007", "02-001", "02-003", "02-014"))]
+
+```
+
+Checkpoints: <br/>
+- nous obtenons `r sum(duplicated(rownames(count_matrix)))` gènes au nom dupliqués, sur un total de `r nrow(count_matrix)` protein-coding gènes.<br/>
+- vérification que les samples sont les mêmes (même nombre et même ordre) entre coldata et la matrice de comptage : `r sum(rownames(basic_coldata) == colnames(count_matrix)) == length(rownames(basic_coldata))`.<br/>
+
+# Est-ce qu'on conserve 06-006 ?
+
+```{r cheks on 06-006}
+
+# checking number of genes at 0 for each sample
+basic_coldata$nber_0 <- NA
+for (id in 1:ncol(count_matrix)) { basic_coldata$nber_0[id] <- sum(count_matrix[,id] == 0) }
+# 06-006 a 96% de gènes à 0 -> déjà un très mauvais point ! Il était toujours aux milieux des ACPs car il ne peut pas présenter de variance ...
+
+# étude des DEGs pre avec 06-006
+coldata_23 <- basic_coldata[basic_coldata$Time == "pre",]
+count_matrix_23 <- count_matrix[, basic_coldata$Time == "pre"]
+design_23 <- as.formula("~ Age_cr + Prog_status")
+# coef_23 <- "Prog_status_1_vs_0"
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_23,
+  colData = coldata_23,
+  design = design_23
+)
+dds <- DESeq(dds)
+
+res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+resOrdered <- res[order(res$padj), ]
+selected_genes_23 <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+
+# Sans 06-006
+# coldata_22 <- coldata_23[coldata_23$SampleID != "06-006",]
+# count_matrix_22 <- count_matrix_23[, coldata_23$SampleID != "06-006"]
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_22,
+  colData = coldata_22,
+  design = design_23
+)
+dds <- DESeq(dds)
+res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)#, contrast=c("Time", "post", "pre")) 
+resOrdered <- res[order(res$padj), ]
+selected_genes_22 <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+
+pour_venn <- list()
+pour_venn[['23_samples']] <- selected_genes_23
+pour_venn[['22_samples']] <- selected_genes_22
+venn(pour_venn) 
+# tous les gènes de 23 sont en commun, 22 en a 27 en plus -> je retire 06-006
+
+
+# étude des DEGs prepost avec 06-006
+design_29 <- as.formula("~ Age_cr + Time")
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = basic_coldata,
+  design = design_23
+)
+dds$Time <- relevel(dds$Time, ref = "pre")
+dds <- DESeq(dds)
+res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+resOrdered <- res[order(res$padj), ]
+selected_genes_29 <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+
+# Sans 06-006
+# coldata_28 <- basic_coldata[basic_coldata$SampleID != "06-006",]
+# count_matrix_28 <- count_matrix[, basic_coldata$SampleID != "06-006"]
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_28,
+  colData = coldata_28,
+  design = design_29
+)
+dds$Time <- relevel(dds$Time, ref = "pre")
+dds <- DESeq(dds)
+res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)#, contrast=c("Time", "post", "pre")) 
+resOrdered <- res[order(res$padj), ]
+selected_genes_28 <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+
+pour_venn <- list()
+pour_venn[['29_samples']] <- selected_genes_29
+pour_venn[['28_samples']] <- selected_genes_28
+venn(pour_venn) 
+# tous les gènes de 29 sont en commun, 28 en a 31 en plus -> je retire 06-006
+
+```
+
+# Analyse des 22 samples pre : quels sont les marqueurs de meilleure survie ?
+
+Recherche du design pour obtenir les gènes DE des 22 samples pre.<br/>
+
+## Tests LRT
+
+```{r LRT pour le choix des variables à inclure dans le design}
+
+
+# Function to check if a design matrix is full rank
+check_design_rank <- function(count_matrix, coldata, formula) {
+  
+  tryCatch({
+    # Create model matrix
+    mm <- model.matrix(formula, data = coldata)
+    # Check rank
+    is_full_rank <- qr(mm)$rank == ncol(mm)
+    
+    return(list(
+      is_valid = is_full_rank,
+      rank = qr(mm)$rank,
+      ncol = ncol(mm)
+    ))
+  }, error = function(e) {
+    return(list(
+      is_valid = FALSE,
+      error = e$message
+    ))
+  })
+}
+
+
+# Create symmetric heatmap showing maximum effect in either direction
+library(viridis)
+plot_symmetric_deg_heatmap <- function(lrt_results, criterion = "padj_and_lfc") {
+  
+  results_df <- lrt_results$results
+  pairwise <- results_df[results_df$test_type == "added_variable", ]
+  
+  if (nrow(pairwise) == 0) {
+    stop("No pairwise tests found in results")
+  }
+  
+  # Choose DEG count
+  if (criterion == "padj_only") {
+    pairwise$n_deg <- pairwise$n_deg_padj_only
+    legend_title <- "DEGs (padj only)"
+  } else {
+    pairwise$n_deg <- pairwise$n_deg_padj_and_lfc
+    legend_title <- "DEGs (padj + LFC)"
+  }
+  
+  # Get all unique variables
+  all_vars <- unique(c(pairwise$reduced_model, pairwise$tested_variable))
+  
+  # Create symmetric matrix
+  deg_matrix <- matrix(NA, nrow = length(all_vars), ncol = length(all_vars))
+  rownames(deg_matrix) <- all_vars
+  colnames(deg_matrix) <- all_vars
+  
+  # Fill matrix - for each pair, take the number of DEGs
+  for (i in 1:nrow(pairwise)) {
+    row_var <- pairwise$tested_variable[i]
+    col_var <- pairwise$reduced_model[i]
+    n_degs <- pairwise$n_deg[i]
+    deg_matrix[row_var, col_var] <- n_degs
+    
+    # # Fill both directions with the maximum DEGs from either direction
+    # current_val <- deg_matrix[row_var, col_var]
+    # if (is.na(current_val) || n_degs > current_val) {
+    #   deg_matrix[row_var, col_var] <- n_degs
+    #   deg_matrix[col_var, row_var] <- n_degs  # Symmetric
+    # }
+  }
+  
+  # Diagonal = single variable tests
+  single_var <- results_df[results_df$test_type == "single_variable", ]
+  if (nrow(single_var) > 0) {
+    for (i in 1:nrow(single_var)) {
+      var <- single_var$full_model[i]
+      if (var %in% all_vars) {
+        if (criterion == "padj_only") {
+          deg_matrix[var, var] <- single_var$n_deg_padj_only[i]
+        } else {
+          deg_matrix[var, var] <- single_var$n_deg_padj_and_lfc[i]
+        }
+      }
+    }
+  }
+  
+  # Convert to long format
+  heatmap_long <- melt(deg_matrix, na.rm = FALSE)
+  colnames(heatmap_long) <- c("variable1", "variable2", "n_deg")
+  
+  # Plot
+  p <- ggplot(heatmap_long, aes(x = variable2, y = variable1, fill = n_deg)) +
+    geom_tile(color = "white", size = 0.5) +
+    geom_text(aes(label = ifelse(is.na(n_deg), "", as.character(n_deg))), 
+              color = "white", size = 3.5, fontface = "bold") +
+    scale_fill_viridis(option = "plasma", na.value = "grey90",
+                      name = legend_title,
+                      limits = c(0, max(heatmap_long$n_deg, na.rm = TRUE))) +
+    labs(title = "Pairwise Variable Effects on Differential Expression",
+         subtitle = "Diagonal: single variable | Off-diagonal: DEGs for the LRT tested on the row",
+         x = "Variable",
+         y = "Variable") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+          axis.text.y = element_text(size = 10),
+          plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+          plot.subtitle = element_text(hjust = 0.5, size = 9),
+          legend.position = "right",
+          panel.grid = element_blank())
+  
+  return(p)
+}
+
+
+
+# Function pour toutes les variables sans a priori
+test_variable_influence_lrt <- function(count_matrix,
+                                        coldata,
+                                        variables = NULL,
+                                        padj_cutoff = 0.05,
+                                        lfc_cutoff = 0.58,
+                                        max_combination_size = 3) {
+  
+  # Get all variables from coldata if not specified
+  if (is.null(variables)) {
+    # Try to identify likely variables (exclude sample names, IDs, etc.)
+    variables <- colnames(coldata)
+    # cat("Available variables in coldata:", paste(variables, collapse = ", "), "\n")
+    # cat("Testing all variables\n")
+  } else {
+    # Check that all specified variables exist
+    missing_vars <- setdiff(variables, colnames(coldata))
+    if (length(missing_vars) > 0) {
+      stop("These variables not found in coldata: ", paste(missing_vars, collapse = ", "))
+    }
+  }
+  
+  # cat("\nVariables to test:", paste(variables, collapse = ", "), "\n")
+  # cat("padj cutoff:", padj_cutoff, "\n")
+  # cat("LFC cutoff:", lfc_cutoff, "\n\n")
+  
+  # Storage for results
+  results_list <- list()
+  skipped_tests <- list()
+  
+  # 1. Test each variable alone (reduced = ~1)
+  cat("=== Testing individual variables ===\n")
+  for (var in variables) {
+    cat("Testing:", var, "vs ~1\n")
+    
+    # Check design validity
+    formula_full <- as.formula(paste("~", var))
+    rank_check <- check_design_rank(count_matrix, coldata, formula_full)
+    
+    if (!rank_check$is_valid) {
+      cat("  SKIPPED: Design matrix not full rank\n")
+      skipped_tests[[paste(var, "vs", "~1")]] <- "Not full rank"
+      next
+    }
+    
+    tryCatch({
+      # Create dds for this test
+      dds <- DESeqDataSetFromMatrix(
+        countData = count_matrix,
+        colData = coldata,
+        design = formula_full
+      )
+      
+      # Run LRT
+      dds_lrt <- DESeq(dds, test = "LRT", reduced = ~ 1, quiet = TRUE)
+      res <- results(dds_lrt)
+      
+      # Count DEGs
+      n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+      n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                        na.rm = TRUE)
+      
+      results_list[[var]] <- data.frame(
+        full_model = var,
+        reduced_model = "~1",
+        test_type = "single_variable",
+        tested_variable = var,
+        n_variables = 1,
+        n_deg_padj_only = n_deg_padj,
+        n_deg_padj_and_lfc = n_deg_both,
+        stringsAsFactors = FALSE
+      )
+      
+      cat("  DEGs (padj):", n_deg_padj, "| DEGs (padj + LFC):", n_deg_both, "\n")
+      
+    }, error = function(e) {
+      cat("  ERROR:", e$message, "\n")
+      skipped_tests[[paste(var, "vs", "~1")]] <- e$message
+    })
+  }
+  
+  # 2. Test pairs of variables (full = A + B, reduced = A or B)
+  if (length(variables) >= 2 && max_combination_size >= 2) {
+    cat("\n=== Testing pairs of variables ===\n")
+    
+    for (i in 1:(length(variables) - 1)) {
+      for (j in (i + 1):length(variables)) {
+        var1 <- variables[i]
+        var2 <- variables[j]
+        
+        # Test A + B vs A (to see effect of B)
+        cat("Testing:", var1, "+", var2, "vs", var1, "\n")
+        
+        formula_full <- as.formula(paste("~", var1, "+", var2))
+        formula_reduced <- as.formula(paste("~", var1))
+        
+        # Check design validity
+        rank_check_full <- check_design_rank(count_matrix, coldata, formula_full)
+        rank_check_reduced <- check_design_rank(count_matrix, coldata, formula_reduced)
+        
+        if (!rank_check_full$is_valid || !rank_check_reduced$is_valid) {
+          cat("  SKIPPED: Design matrix not full rank\n")
+          skipped_tests[[paste(var1, var2, "vs", var1)]] <- "Not full rank"
+          next
+        }
+        
+        tryCatch({
+          dds <- DESeqDataSetFromMatrix(
+            countData = count_matrix,
+            colData = coldata,
+            design = formula_full
+          )
+          
+          dds_lrt <- DESeq(dds, test = "LRT", reduced = formula_reduced, quiet = TRUE)
+          res <- results(dds_lrt)
+          
+          n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+          n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                            na.rm = TRUE)
+          
+          results_list[[paste(var1, var2, "vs", var1, sep = "_")]] <- data.frame(
+            full_model = paste(var1, "+", var2),
+            reduced_model = var1,
+            test_type = "added_variable",
+            tested_variable = var2,
+            n_variables = 2,
+            n_deg_padj_only = n_deg_padj,
+            n_deg_padj_and_lfc = n_deg_both,
+            stringsAsFactors = FALSE
+          )
+          
+          cat("  DEGs (padj):", n_deg_padj, "| DEGs (padj + LFC):", n_deg_both, "\n")
+          
+        }, error = function(e) {
+          cat("  ERROR:", e$message, "\n")
+          skipped_tests[[paste(var1, var2, "vs", var1)]] <- e$message
+        })
+        
+        # Test A + B vs B (to see effect of A)
+        cat("Testing:", var1, "+", var2, "vs", var2, "\n")
+        
+        formula_reduced2 <- as.formula(paste("~", var2))
+        rank_check_reduced2 <- check_design_rank(count_matrix, coldata, formula_reduced2)
+        
+        if (!rank_check_full$is_valid || !rank_check_reduced2$is_valid) {
+          cat("  SKIPPED: Design matrix not full rank\n")
+          skipped_tests[[paste(var1, var2, "vs", var2)]] <- "Not full rank"
+          next
+        }
+        
+        tryCatch({
+          dds <- DESeqDataSetFromMatrix(
+            countData = count_matrix,
+            colData = coldata,
+            design = formula_full
+          )
+          
+          dds_lrt <- DESeq(dds, test = "LRT", reduced = formula_reduced2, quiet = TRUE)
+          res <- results(dds_lrt)
+          
+          n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+          n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                            na.rm = TRUE)
+          
+          results_list[[paste(var1, var2, "vs", var2, sep = "_")]] <- data.frame(
+            full_model = paste(var1, "+", var2),
+            reduced_model = var2,
+            test_type = "added_variable",
+            tested_variable = var1,
+            n_variables = 2,
+            n_deg_padj_only = n_deg_padj,
+            n_deg_padj_and_lfc = n_deg_both,
+            stringsAsFactors = FALSE
+          )
+          
+          cat("  DEGs (padj):", n_deg_padj, "| DEGs (padj + LFC):", n_deg_both, "\n")
+          
+        }, error = function(e) {
+          cat("  ERROR:", e$message, "\n")
+          skipped_tests[[paste(var1, var2, "vs", var2)]] <- e$message
+        })
+      }
+    }
+  }
+  
+  # 3. Test triplets (full = A + B + C, reduced = A + B)
+  if (length(variables) >= 3 && max_combination_size >= 3) {
+    # cat("\n=== Testing triplets of variables ===\n")
+    
+    for (i in 1:(length(variables) - 2)) {
+      for (j in (i + 1):(length(variables) - 1)) {
+        for (k in (j + 1):length(variables)) {
+          var1 <- variables[i]
+          var2 <- variables[j]
+          var3 <- variables[k]
+          
+          # cat("Testing:", var1, "+", var2, "+", var3, "vs", var1, "+", var2, "\n")
+          
+          formula_full <- as.formula(paste("~", var1, "+", var2, "+", var3))
+          formula_reduced <- as.formula(paste("~", var1, "+", var2))
+          
+          # Check design validity
+          rank_check_full <- check_design_rank(count_matrix, coldata, formula_full)
+          rank_check_reduced <- check_design_rank(count_matrix, coldata, formula_reduced)
+          
+          if (!rank_check_full$is_valid || !rank_check_reduced$is_valid) {
+            cat("  SKIPPED: Design matrix not full rank\n")
+            skipped_tests[[paste(var1, var2, var3, "vs", var1, var2)]] <- "Not full rank"
+            next
+          }
+          
+          tryCatch({
+            dds <- DESeqDataSetFromMatrix(
+              countData = count_matrix,
+              colData = coldata,
+              design = formula_full
+            )
+            
+            dds_lrt <- DESeq(dds, test = "LRT", reduced = formula_reduced, quiet = TRUE)
+            res <- results(dds_lrt)
+            
+            n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+            n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                              na.rm = TRUE)
+            
+            results_list[[paste(var1, var2, var3, "vs", var1, var2, sep = "_")]] <- data.frame(
+              full_model = paste(var1, "+", var2, "+", var3),
+              reduced_model = paste(var1, "+", var2),
+              test_type = "added_to_pair",
+              tested_variable = var3,
+              n_variables = 3,
+              n_deg_padj_only = n_deg_padj,
+              n_deg_padj_and_lfc = n_deg_both,
+              stringsAsFactors = FALSE
+            )
+            
+            cat("  DEGs (padj):", n_deg_padj, "| DEGs (padj + LFC):", n_deg_both, "\n")
+            
+          }, error = function(e) {
+            cat("  ERROR:", e$message, "\n")
+            skipped_tests[[paste(var1, var2, var3, "vs", var1, var2)]] <- e$message
+          })
+        }
+      }
+    }
+  }
+  
+  # Combine all results
+  if (length(results_list) == 0) {
+    cat("\nWARNING: No tests were successful!\n")
+    results_df <- data.frame()
+  } else {
+    results_df <- do.call(rbind, results_list)
+    rownames(results_df) <- NULL
+  }
+  
+  # Summary
+  cat("\n=== SUMMARY ===\n")
+  cat("Successful tests:", length(results_list), "\n")
+  cat("Skipped/failed tests:", length(skipped_tests), "\n")
+  
+  if (length(skipped_tests) > 0) {
+    cat("\nSkipped tests:\n")
+    for (test_name in names(skipped_tests)) {
+      cat("  ", test_name, ":", skipped_tests[[test_name]], "\n")
+    }
+  }
+  
+  return(list(
+    results = results_df,
+    skipped = skipped_tests
+  ))
+}
+
+lrt_results <- test_variable_influence_lrt(
+  count_matrix = count_matrix_pre,
+  coldata = coldata_pre,
+  variables = c("Time", "Sex", "Death_status", "Prog_status", "Surg_status", "Best_response_2", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "best_lesion_perc_cr", "OS_cr", "PFS_cr", "QC_duplication_perc_cr", "QC_aligned_M_cr", "QC_uniq_aligned_cr", "tumor_spline_slope_cr", "tumor_auc_cr", "tumor_auc_normalized_cr"),
+  padj_cutoff = 0.05,
+  lfc_cutoff = 0.58,
+  max_combination_size = 2  # Test singles and pairs only
+)
+
+plot_symmetric_deg_heatmap(lrt_results, criterion = "padj_only")
+
+
+
+# Fonction pour finaliser le choix des variables à ajouter au design_0
+test_variable_influence_lrt_design0 <- function(count_matrix,
+                                                coldata,
+                                                variables = NULL,
+                                                padj_cutoff = 0.05,
+                                                lfc_cutoff = 0.58,
+                                                design0 = 'Time',
+                                                max_combination_size = 2) {
+    if (is.null(variables)) {
+    variables <- colnames(coldata)
+  } else {
+    missing_vars <- setdiff(variables, colnames(coldata))
+    if (length(missing_vars) > 0) {
+      stop("These variables not found in coldata: ", paste(missing_vars, collapse = ", "))
+    }
+  }
+  results_list <- list()
+  skipped_tests <- list()
+  cat("=== Testing individual variables ===\n")
+  for (var in variables) {
+    cat("Testing:", var, "vs design0\n")
+    formula_full <- as.formula(paste("~ ", var, " + ", design0))
+    rank_check <- check_design_rank(count_matrix, coldata, formula_full)
+    if (!rank_check$is_valid) {
+      cat("  SKIPPED: Design matrix not full rank\n")
+      skipped_tests[[paste(var, "vs", "design0")]] <- "Not full rank"
+      next
+    }
+    tryCatch({
+      dds <- DESeqDataSetFromMatrix(
+        countData = count_matrix,
+        colData = coldata,
+        design = formula_full
+      )
+      dds_lrt <- DESeq(dds, test = "LRT", reduced = as.formula(paste("~ ", design0)), quiet = TRUE)
+      res <- results(dds_lrt)
+      n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+      n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                        na.rm = TRUE)
+      results_list[[var]] <- data.frame(
+        full_model = var,
+        reduced_model = "~1",
+        test_type = "single_variable",
+        tested_variable = var,
+        n_variables = 1,
+        n_deg_padj_only = n_deg_padj,
+        n_deg_padj_and_lfc = n_deg_both,
+        stringsAsFactors = FALSE
+      )
+      cat("  DEGs (padj):", n_deg_padj, "\n")
+    }, error = function(e) {
+      cat("  ERROR:", e$message, "\n")
+      skipped_tests[[paste(var, "vs", "design0")]] <- e$message
+    })
+  }
+  if (length(variables) >= 2 && max_combination_size >= 2) {
+    cat("\n=== Testing pairs of variables ===\n")
+    for (i in 1:(length(variables) - 1)) {
+      for (j in (i + 1):length(variables)) {
+        var1 <- variables[i]
+        var2 <- variables[j]
+        cat("Testing:", var1, "+", var2, "vs", var1, "\n")
+        formula_full <- as.formula(paste("~", var1, "+", var2, " + ", design0))
+        formula_reduced <- as.formula(paste("~", var1, " + ", design0))
+        rank_check_full <- check_design_rank(count_matrix, coldata, formula_full)
+        rank_check_reduced <- check_design_rank(count_matrix, coldata, formula_reduced)
+        if (!rank_check_full$is_valid || !rank_check_reduced$is_valid) {
+          cat("  SKIPPED: Design matrix not full rank\n")
+          skipped_tests[[paste(var1, var2, "vs", var1)]] <- "Not full rank"
+          next
+        }
+        tryCatch({
+          dds <- DESeqDataSetFromMatrix(
+            countData = count_matrix,
+            colData = coldata,
+            design = formula_full
+          )
+          dds_lrt <- DESeq(dds, test = "LRT", reduced = formula_reduced, quiet = TRUE)
+          res <- results(dds_lrt)
+          n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+          n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                            na.rm = TRUE)
+          results_list[[paste(var1, var2, "vs", var1, sep = "_")]] <- data.frame(
+            full_model = paste(var1, "+", var2),
+            reduced_model = var1,
+            test_type = "added_variable",
+            tested_variable = var2,
+            n_variables = 2,
+            n_deg_padj_only = n_deg_padj,
+            n_deg_padj_and_lfc = n_deg_both,
+            stringsAsFactors = FALSE
+          )
+          cat("  DEGs (padj):", n_deg_padj, "\n")
+        }, error = function(e) {
+          cat("  ERROR:", e$message, "\n")
+          skipped_tests[[paste(var1, var2, "vs", var1)]] <- e$message
+        })
+        cat("Testing:", var1, "+", var2, "vs", var2, "\n")
+        formula_reduced2 <- as.formula(paste("~", var2, " + ", design0))
+        rank_check_reduced2 <- check_design_rank(count_matrix, coldata, formula_reduced2)
+        if (!rank_check_full$is_valid || !rank_check_reduced2$is_valid) {
+          cat("  SKIPPED: Design matrix not full rank\n")
+          skipped_tests[[paste(var1, var2, "vs", var2)]] <- "Not full rank"
+          next
+        }
+        tryCatch({
+          dds <- DESeqDataSetFromMatrix(
+            countData = count_matrix,
+            colData = coldata,
+            design = formula_full
+          )
+          dds_lrt <- DESeq(dds, test = "LRT", reduced = formula_reduced2, quiet = TRUE)
+          res <- results(dds_lrt)
+          n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+          n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                            na.rm = TRUE)
+          results_list[[paste(var1, var2, "vs", var2, sep = "_")]] <- data.frame(
+            full_model = paste(var1, "+", var2),
+            reduced_model = var2,
+            test_type = "added_variable",
+            tested_variable = var1,
+            n_variables = 2,
+            n_deg_padj_only = n_deg_padj,
+            n_deg_padj_and_lfc = n_deg_both,
+            stringsAsFactors = FALSE
+          )
+          cat("  DEGs (padj):", n_deg_padj, "\n")
+        }, error = function(e) {
+          cat("  ERROR:", e$message, "\n")
+          skipped_tests[[paste(var1, var2, "vs", var2)]] <- e$message
+        })
+      }
+    }
+  }
+  if (length(results_list) == 0) {
+    cat("\nWARNING: No tests were successful!\n")
+    results_df <- data.frame()
+  } else {
+    results_df <- do.call(rbind, results_list)
+    rownames(results_df) <- NULL
+  }
+  cat("\n=== SUMMARY ===\n")
+  cat("Successful tests:", length(results_list), "\n")
+  cat("Skipped/failed tests:", length(skipped_tests), "\n")
+  return(list(
+    results = results_df,
+    skipped = skipped_tests
+  ))
+}
+
+# Run the analysis
+lrt_results <- test_variable_influence_lrt_design0(
+  count_matrix = count_matrix_pairs,
+  coldata = coldata_pairs,
+  variables = c("Sex", "Death_status", "Prog_status", "Surg_status", "Best_response_2", "Height_cr", "Weight_cr", "BMI_cr", "best_lesion_perc_cr", "OS_cr", "PFS_cr", "QC_duplication_perc_cr", "QC_aligned_M_cr", "QC_uniq_aligned_cr", "tumor_spline_slope_cr", "tumor_auc_cr", "tumor_auc_normalized_cr"),
+  padj_cutoff = 0.05,
+  lfc_cutoff = 0.58,
+  design0 = "Age_cr + Time + Age_cr:Time",
+  max_combination_size = 2  # Test singles and pairs only
+)
+
+plot_symmetric_deg_heatmap(lrt_results, criterion = "padj_only")
+
+```
+
+
+## Heatmap clustering et variables sélection
+
+```{r Méthode Emilie}
+
+design_1 <- as.formula("~ Age_cr + Prog_status")
+design_2 <- as.formula("~ QC_duplication_perc_cr + Age_cr + Prog_status")
+design_3 <- as.formula("~ Age_cr + Best_response_2")
+design_4 <- as.formula("~ QC_duplication_perc_cr + Age_cr + Best_response_2")
+
+designs <- list(
+  design_1 = design_1,
+  design_2 = design_2,
+  design_3 = design_3,
+  design_4 = design_4
+)
+
+clust_22 <- function(E,annot,q=0.95){
+    # top genes
+    vari <- apply(E,1,mad)
+    top <- which(vari > quantile(vari,q))
+    
+    ## mad values for prot object
+    MAD <- as.data.frame(cbind(MAD=vari,MADtop5pc=FALSE))
+    rownames(MAD) <- names(vari)
+    MAD$MADtop5pc[top] <- TRUE
+    
+    ## cluster data
+    d <- as.matrix(E)
+    a <- annot[colnames(d),]
+    
+    ## cluster colors : à adapter selon ton cas
+    sample_col <- rainbow(length(unique(annot$SampleID)))
+    names(sample_col) <- sort(unique(annot$SampleID))
+    lesion_col <- rainbow(length(unique(annot$best_lesion_perc_cr)))
+    names(lesion_col) <- sort(unique(annot$best_lesion_perc_cr))
+    age_col <- rainbow(length(unique(annot$Age_cr)))
+    names(age_col) <- sort(unique(annot$Age_cr))
+    QC_col <- rainbow(length(unique(annot$QC_duplication_perc_cr)))
+    names(QC_col) <- sort(unique(annot$QC_duplication_perc_cr))
+    sex_col <- c("pink","cyan")
+    names(sex_col) <- c("F","M")
+    prog_col <- c("grey","black")
+    names(prog_col) <- c("0","1")
+    br2_col <- c("grey","black")
+    names(br2_col) <- c("PR","SD_PD")
+    
+    ## cluster legend
+    column_ha = HeatmapAnnotation(
+      Sample=a$SampleID,
+      Lesion=a$Lesion,
+      Age=a$Age_cr, 
+      QC=a$QC_duplication_perc_cr,
+      Gender=a$Sex,
+      Progress=a$Prog_status,
+      Best_response=a$Best_response_2,
+      col=list(Sample=sample_col,Lesion=lesion_col,Age=age_col,QC=QC_col,Gender=sex_col,Progress=prog_col,Best_response=br2_col
+      ))
+    
+    ## heatmap
+    h <-  Heatmap(d[top,],
+                  clustering_distance_columns  = "pearson",
+                  clustering_method_columns = "ward.D2",
+                  clustering_distance_rows  = "pearson",
+                  clustering_method_rows = "ward.D2",
+                  top_annotation = column_ha)
+    
+    ## partitions
+    hc <- hclust(as.dist(1-cor(d[top,],method = "pearson")),method = "ward.D2")
+    allct <- NULL
+    for(n in 2:5){
+      ct <- cutree(hc,n)
+      allct <- rbind(allct,ct[rownames(a)])
+    }
+    rownames(allct) <- paste0(2:5,"_clusters")
+    a <- cbind(a, t(allct))
+    
+    # tests
+    varcol <- c("Sex","Prog_status","Best_response_2")
+    varcol <- varcol[varcol %in% names(a)]
+    clcol <- paste0(2:5,"_clusters")
+    #allcol = c(varcol,clcol)
+    M <- matrix(NA,nrow=length(clcol),ncol=length(varcol))
+    aa <- a[,c(clcol,varcol)]
+    for(i in 1:length(clcol))
+      for(j in 1:length(varcol)){
+        M[i,j]  <- suppressWarnings(chisq.test(aa[,clcol[i]],aa[,varcol[j]])$p.value)
+      }
+    rownames(M) <- clcol
+    colnames(M) <- varcol
+    return(list(h=h,vari=vari,MAD=MAD,a=a,test=format(M,scientific=T,digits=3)))
+}
+
+for (i in 1:4) {
+  design_name <- paste0("design_", i)
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix_22,
+    colData = coldata_22,
+    design = designs[[design_name]]
+  )
+  # dds$Time <- relevel(dds$Time, ref = "pre")
+  dds <- DESeq(dds)
+  norm_counts <- assay(vst(dds, blind=FALSE))
+  # keep_mean <- rowMeans(norm_counts) > 10
+  # keep_zero <- rowSums(norm_counts == 0) / ncol(norm_counts) <= 0.90
+  # dds_filt <- dds[keep_mean & keep_zero, ]
+  
+  # clustering is done from the normalised expression of the top 5% most variant proteins.
+  clustE <- clust_22(norm_counts,coldata_22)
+  draw(clustE$h)#, main=design_name)
+  
+  # P-value of the chi2 test between the clinical variables and the different partitions of the dendrogram: 
+  knitr::kable(clustE$test)
+}
+
+```
+
+## Comparaison des DEGs obtenus par les meilleurs designs des LRT
+
+Design 1: ~ Age_cr + Prog_status <br/>
+Design 2: ~ QC_duplication_perc + Age_cr + Prog_status <br/>
+Design 3: ~ QC_duplication_perc + Age_cr + Best_response_2 <br/>
+
+
+```{r analyse designs 22 samples}
+
+# coldata_22 <- basic_coldata[basic_coldata$Time == "pre",]
+# count_matrix_22 <- count_matrix[, basic_coldata$Time == "pre"]
+
+design_1 <- as.formula("~ Age_cr + Prog_status")
+design_2 <- as.formula("~ QC_duplication_perc_cr + Age_cr + Prog_status")
+design_3 <- as.formula("~ Age_cr + Best_response_2")
+design_4 <- as.formula("~ QC_duplication_perc_cr + Age_cr + Best_response_2")
+design_5 <- as.formula("~ Age_cr + best_lesion_perc_cr")
+
+designs <- list(
+  design_1 = design_1,
+  design_2 = design_2,
+  design_3 = design_3,
+  design_4 = design_4,
+  design_5 = design_5
+)
+coefs <- list(
+  design_1 = "Prog_status_1_vs_0",
+  design_2 = "Prog_status_1_vs_0",
+  design_3 = "Best_response_2_SD_PD_vs_PR",
+  design_4 = "Best_response_2_SD_PD_vs_PR",
+  design_5 = "best_lesion_perc_cr"
+)
+
+# dds_list <- list()
+# res_list <- list()
+selected_genes_list_22 <- list()
+norm.count_list_22 <- list()
+# resLFC_list <- list()
+# selected_genesLFC_list_22 <- list()
+for (i in 1:5) {
+  design_name <- paste0("design_", i)
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix_22,
+    colData = coldata_22,
+    design = designs[[design_name]]
+  )
+  
+  dds <- DESeq(dds)
+  # dds_list[[design_name]] <- dds
+  
+  # norm.count <- as.data.frame(counts(dds_prepost, normalized=TRUE))
+  norm.count <- assay(vst(dds, blind=FALSE))
+  norm.count_list_22[[design_name]] <- norm.count
+  
+  # connaître le dernier coef de dds
+  # resultsNames(dds)
+  
+  res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+  # res_list[[design_name]] <- res
+  # summary(res_prepost_1)
+  # design1 : 66 DEGs
+  # design2 : 179 DEGs
+  # design3 : 101 DEGs
+  # design4 : 163 DEGs
+  # design5 : 18 DEGs (79 si j'ajoute QC_duplication_perc_cr)
+  resOrdered <- res[order(res$padj), ]
+  selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+  selected_genes_list_22[[design_name]] <- selected_genes
+  
+  # resLFC <- lfcShrink(dds, coef=coefs[[design_name]], type="apeglm", lfcThreshold=lfc.cutoff)
+  # resLFC_list[[design_name]] <- resLFC
+  # summary(resLFC_1)
+  # resLFCordered <- resLFC[order(resLFC$svalue), ]
+  # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+  # selected_genesLFC_list_22[[design_name]] <- selected_genesLFC
+  
+  # checking the DESeq2 dispersion 
+  plotDispEsts(dds, main=paste("DESeq2 dispersion plot 22", design_name))
+  
+  # looking at the number of outliers
+  boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance 22", design_name))
+  
+  # MA-plot
+  # plotMA(resLFC, ylim=c(-2,2), main=paste("plotMA 22", design_name))
+
+}
+
+venn(selected_genes_list_22)#, main="Overlap of DEGs across designs")
+# venn(selected_genesLFC_list_22)
+# for (i in 1:length(selected_genes_list_22)) { print(length(selected_genes_list_22[[i]])) }
+
+# heatmaps des différents designs :
+distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+for ( i in 1:5 ) {
+  design_name <- paste0("design_", i)
+  DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_22[[design_name]], rownames(counts_genes))]
+  matrix_heatmap_22 <- norm.count_list_22[[design_name]][which(rownames(norm.count_list_22[[design_name]]) %in% selected_genes_list_22[[design_name]]),]
+  rownames(matrix_heatmap_22) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_22), rownames(counts_genes))], unique = T)
+  heatmap.2(as.matrix(matrix_heatmap_22), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+}
+
+# heatmaps des différents designs, en colorant par les 3 dernières variables des différents designs
+prog_col <- c("grey","black")
+names(prog_col) <- c("0","1")
+br2_col <- c("grey","black")
+names(br2_col) <- c("PR","SD_PD")
+blperc_col <- rainbow(length(unique(coldata_22$best_lesion_perc_cr)))
+names(blperc_col) <- sort(unique(coldata_22$best_lesion_perc_cr))
+column_ha = HeatmapAnnotation(
+    Progression=coldata_22$Prog_status,
+    Best_response=coldata_22$Best_response_2,
+    Lesion_perc=coldata_22$best_lesion_perc_cr,
+    col=list(Progression=prog_col,Best_response=br2_col,Lesion_perc=blperc_col
+    ))
+
+for ( i in 1:5 ) {
+  design_name <- paste0("design_", i)
+  DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_22[[design_name]], rownames(counts_genes))]
+  matrix_heatmap_22 <- norm.count_list_22[[design_name]][which(rownames(norm.count_list_22[[design_name]]) %in% selected_genes_list_22[[design_name]]),]
+  rownames(matrix_heatmap_22) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_22), rownames(counts_genes))], unique = T)
+  # heatmap.2(as.matrix(matrix_heatmap_22), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+  draw(Heatmap(as.matrix(matrix_heatmap_22),
+                clustering_distance_columns  = "pearson",
+                clustering_method_columns = "ward.D2",
+                clustering_distance_rows  = "pearson",
+                clustering_method_rows = "ward.D2",
+                top_annotation = column_ha))
+}
+
+```
+
+A la fin de l'étude : regarder le nombre de gènes DE lorsque je shrink les log fold change !
+
+
+# Analyse des 28 samples : 22 pre vs 6 post
+
+Recherche des gènes DE entre les 22 samples pre et les 6 samples post.<br/>
+
+##  XXX
+
+Design 1: ~ Age_cr + QC_aligned_M_cr + Time <br/>
+Design 2: ~ Sex + Age_cr + QC_aligned_M_cr + Time <br/>
+
+
+```{r XXX}
+
+design_0 <- as.formula("~ Time")
+# design_1 <- as.formula("~ SampleID + Time") # 178 gènes, le heatmap n'est pas joli
+# design_2 <- as.formula("~ Age_cr + QC_aligned_M_cr + SampleID + Time")
+# design_3 <- as.formula("~ 0 + Time + Age_cr + QC_aligned_M_cr + SampleID")
+design_1 <- as.formula("~ Age_cr + Time")
+design_2 <- as.formula("~ QC_duplication_perc_cr + Age_cr + Time")
+design_3 <- as.formula("~ Sex + QC_duplication_perc_cr + Age_cr + Time")
+design_4 <- as.formula("~ Sex + Age_cr + Time")
+# design_4 <- as.formula("~ Age_cr + Time + Age_cr:Time") # 60/62 des DEGs ne sont pas en commun avec les autres designs
+# 14 DEGs communs aux designs 0 à 4 (15 pour 0 à 3) ; 68 DEGs communs aux designs 1 à 4 ; 75 DEGs communs aux designs 1 à 3
+# bcp de DEGs spécifiques à la QC ... je décide de ne pas prendre la QC
+# je choisis design_1
+
+designs <- list(
+  design_0 = design_0,
+  design_1 = design_1,
+  design_2 = design_2,
+  design_3 = design_3,
+  design_4 = design_4
+)
+
+# dds_list <- list()
+# res_list <- list()
+selected_genes_list_28 <- list()
+norm.count_list_28 <- list()
+# resLFC_list <- list()
+# selected_genesLFC_list_28 <- list()
+for (i in 0:4) {
+  design_name <- paste0("design_", i)
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix_28,
+    colData = coldata_28,
+    design = designs[[design_name]]
+  )
+  # if (i != 4) {
+  dds$Time <- relevel(dds$Time, ref = "pre")
+  # }
+  dds <- DESeq(dds)
+  # dds_list[[design_name]] <- dds
+  
+  norm.count <- assay(vst(dds, blind=FALSE))
+  norm.count_list_28[[design_name]] <- norm.count
+  
+  res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+  # res_list[[design_name]] <- res
+  # summary(res_prepost_1)
+  # design0 : 21 DEGs
+  # design1 : 94 DEGs
+  # design2 : 339 DEGs
+  # design3 : 445 DEGs
+  # design4 : 164 DEGs
+  resOrdered <- res[order(res$padj), ]
+  selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+  selected_genes_list_28[[design_name]] <- selected_genes
+  
+  # resLFC <- lfcShrink(dds, coef=resultsNames(dds)[length(resultsNames(dds))], type="apeglm", lfcThreshold=lfc.cutoff)
+  # resLFC_list[[design_name]] <- resLFC
+  # summary(resLFC_1)
+  # resLFCordered <- resLFC[order(resLFC$svalue), ]
+  # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+  # selected_genesLFC_list_28[[design_name]] <- selected_genesLFC
+  
+  # checking the DESeq2 dispersion 
+  plotDispEsts(dds, main=paste("DESeq2 dispersion plot prepost", design_name))
+  
+  # looking at the number of outliers
+  boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance prepost", design_name))
+  
+  # MA-plot
+  # plotMA(resLFC, ylim=c(-2,2), main=paste("plotMA prepost", design_name))
+
+}
+
+venn(selected_genes_list_28)#, main="Overlap of DEGs across designs")
+# venn(selected_genesLFC_list_28)#, main="Overlap of shrinked DEGs across designs")
+
+for (i in selected_genes_list_28) { print(length(i)) }
+
+# 60 gènes exclusifs des paires : 
+genes_design4 <- selected_genes_list_28['design_4']$design_4
+genes_design1 <- selected_genes_list_28['design_1']$design_1
+genes_design2 <- selected_genes_list_28['design_2']$design_2
+genes_uniq <- genes_design4[genes_design4 %!in% genes_design1 & genes_design4 %!in% genes_design2]
+genes_symbol <- counts_genes$gene_name[match(genes_uniq, rownames(counts_genes))]
+# "H3C11"           "ANXA8L1"         "NELL1"           "C1QTNF4"         "PPFIA4"          "ENSG00000288440" "HRURF"           "TMEM114"         "AURKA"           "LILRA2"          "LCE1F"           "HNRNPL"          "TRIM46"          "PSORS1C2"        "DCUN1D2"         "ZCCHC12"         "KRT26"           "TUBB"            "DCDC2B"          "MMD2"            "PPP4R3C"         "TAC1"            "MAPK8IP1"        "CADM3"           "NSF"             "NTSR1"           "PRRC2A"          "ENSG00000282168" "NAIP"            "TMEM52"          "PSAPL1"          "RPS9"            "SSC4D"           "BDP1"            "PDE4B"           "KRT1"            "UGT2B15"         "AVP"             "COL18A1"         "AQP7B"            "MFSD8"           "RAD51D"          "GREM1"           "HLA-F"           "ANK1"            "AJUBA"           "FHIT"            "CDSN"            "ARHGAP9"         "AKR1C2"          "WASHC1"          "DES"             "EFNA3"           "CTRB1"           "SLC67A1"         "MGAM2"           "CTRB2"           "VLDLR"           "CARTPT"          "NAPSA" 
+
+
+# # tests de design
+# dds <- DESeqDataSetFromMatrix(
+#      countData = count_matrix,
+#      colData = basic_coldata,
+#      design = model.matrix(~ 0 + Time, basic_coldata)
+#  )
+# dds <- DESeq(dds)
+# res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
+# summary(res)
+# 
+# resOrdered <- res[order(res$padj), ]
+# selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+# selected_genes
+
+# heatmaps des différents designs :
+# distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+for ( i in 0:4 ) {
+  design_name <- paste0("design_", i)
+  DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_28[[design_name]], rownames(counts_genes))]
+  matrix_heatmap_28 <- norm.count_list_28[[design_name]][which(rownames(norm.count_list_28[[design_name]]) %in% selected_genes_list_28[[design_name]]),]
+  rownames(matrix_heatmap_28) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_28), rownames(counts_genes))], unique = T)
+  heatmap.2(as.matrix(matrix_heatmap_28), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+}
+
+```
+
+## XXX : {.tabset}
+
+### XXX
+```{r XXX}
+
+resOrdered_1 <- res_prepost_1[order(res_prepost_1$padj),]
+selected_genes_1 <- rownames(resOrdered_1[which(resOrdered_1$padj < padj.cutoff), ])
+venn(list('0'=selected_genes_0, '1'=selected_genes_1, '2'=selected_genes_2, '3'=selected_genes_3, '4'=selected_genes_4))
+
+resLFCordered_1 <- resLFC_1[order(resLFC_1$svalue),]
+selected_genesLFC_1 <- resLFCordered_1[which(resLFCordered_1$svalue < 0.005),]
+
+
+selected_genes$gene_symbol <- counts_genes$gene_name[match(rownames(selected_genes), rownames(counts_genes))]
+genes_up <- selected_genes[which(selected_genes$log2FoldChange > 0),"gene_symbol"]
+genes_down <- selected_genes[which(selected_genes$log2FoldChange < 0),"gene_symbol"]
+
+# verif duplicats genes symbol
+sum(duplicated(genes_up))
+sum(duplicated(genes_down))
+
+rld <- rlog(dds_prepost, blind=FALSE)
+
+```
+
+
+```{r cross-validation }
+
+library(caret)
+
+# Cross-validation to check DEGs reproducibility
+cv_samples_DEGs <- function(count_matrix, coldata, design, padj.cutoff=0.05, lfc.cutoff=0.58) {
+  
+  # set.seed(123)
+  cv_results <- list()
+
+  for (outlier in 1:ncol(count_matrix)) {
+    col_ind <- 1:ncol(count_matrix)
+    indexes <- col_ind[-outlier]
+    
+    tryCatch({
+      # Train on training set
+      dds <- DESeqDataSetFromMatrix(
+      countData = count_matrix[, indexes],
+        colData = coldata[indexes, ],
+        design = as.formula(design)
+      )
+      dds <- DESeq(dds, quiet = TRUE)
+      
+      res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
+      resOrdered <- res[order(res$padj), ]
+      selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+      cv_results[[outlier]] <- selected_genes
+      
+    })
+    }
+  
+  return(cv_results)
+}
+
+check_repro <- cv_samples_DEGs(count_matrix, basic_coldata, "'~ Age_cr + QC_aligned_M_cr + Time'")
+
+min_nb <- 25
+all_DEGs <- do.call(c, check_repro)
+number_by_DEG <- table(all_DEGs)
+DEGs_in_common <- list()
+for (DEG in rownames(number_by_DEG)) {
+  if (number_by_DEG[[DEG]] > min_nb) {
+    DEGs_in_common <- append(DEGs_in_common, DEG)
+  }
+}
+DEGs_in_common <- do.call(c, DEGs_in_common)
+
+
+
+
+
+
+
+# Cross-validation to compare designs (fourni par Claude, pour comparer les designs)
+cv_compare_designs <- function(count_matrix, coldata, designs, n_folds = 5) {
+  
+  set.seed(123)
+  folds <- createFolds(1:ncol(count_matrix), k = n_folds)
+  
+  cv_results <- data.frame(
+    design = character(),
+    mean_correlation = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (design_formula in designs) {
+    cat("Testing design:", design_formula, "\n")
+    
+    correlations <- numeric(n_folds)
+    
+    for (fold_idx in 1:n_folds) {
+      # Split data
+      test_idx <- folds[[fold_idx]]
+      train_idx <- setdiff(1:ncol(count_matrix), test_idx)
+      
+      tryCatch({
+        # Train on training set
+        dds_train <- DESeqDataSetFromMatrix(
+          countData = count_matrix[, train_idx],
+          colData = coldata[train_idx, ],
+          design = as.formula(design_formula)
+        )
+        dds_train <- DESeq(dds_train, quiet = TRUE)
+        
+        # Predict on test set (using dispersion and fitted values)
+        # Correlation between observed and expected
+        dds_test <- DESeqDataSetFromMatrix(
+          countData = count_matrix[, test_idx],
+          colData = coldata[test_idx, ],
+          design = as.formula(design_formula)
+        )
+        dds_test <- estimateSizeFactors(dds_test)
+        
+        # Use training dispersions
+        dispersions(dds_test) <- dispersions(dds_train)
+        
+        # Correlation between normalized counts and fitted values
+        norm_counts_test <- counts(dds_test, normalized = TRUE)
+        
+        # This is simplified - you'd want more sophisticated validation
+        correlations[fold_idx] <- cor(as.vector(norm_counts_test), 
+                                      as.vector(counts(dds_test, normalized = TRUE)),
+                                      use = "complete.obs")
+        
+      }, error = function(e) {
+        correlations[fold_idx] <- NA
+      })
+    }
+    
+    cv_results <- rbind(cv_results, data.frame(
+      design = design_formula,
+      mean_correlation = mean(correlations, na.rm = TRUE)
+    ))
+  }
+  
+  cv_results <- cv_results[order(cv_results$mean_correlation, decreasing = TRUE), ]
+  
+  return(cv_results)
+}
+
+cv_compare_designs(count_matrix, basic_coldata, designs, n_folds = 5)
+
+
+```
+
+
+```{r limma-voom to compare the designs}
+
+library(limma)
+library(edgeR)
+
+# Function to compare designs using limma-voom
+compare_designs_voom <- function(count_matrix, coldata, designs) {
+  
+  results <- data.frame(
+    design = character(),
+    mean_variance_explained = numeric(),
+    median_variance_explained = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (design_formula in designs) {
+    cat("Testing design:", design_formula, "\n")
+    
+    tryCatch({
+      # Create DGEList
+      dge <- DGEList(counts = count_matrix)
+      dge <- calcNormFactors(dge)
+      
+      # Design matrix
+      design_mat <- model.matrix(as.formula(design_formula), data = coldata)
+      
+      # Voom transformation
+      v <- voom(dge, design_mat, plot = FALSE)
+      
+      # Fit model
+      fit <- lmFit(v, design_mat)
+      fit <- eBayes(fit)
+      
+      # Calculate variance explained (R-squared for each gene)
+      # Residual variance vs total variance
+      residual_var <- fit$sigma^2
+      
+      # Total variance
+      total_var <- apply(v$E, 1, var)
+      
+      # Proportion of variance explained
+      var_explained <- 1 - (residual_var / total_var)
+      var_explained <- pmax(var_explained, 0)  # Can't be negative
+      
+      results <- rbind(results, data.frame(
+        design = design_formula,
+        mean_variance_explained = mean(var_explained, na.rm = TRUE),
+        median_variance_explained = median(var_explained, na.rm = TRUE)
+      ))
+      
+    }, error = function(e) {
+      cat("  ERROR:", e$message, "\n")
+    })
+  }
+  
+  results <- results[order(results$mean_variance_explained, decreasing = TRUE), ]
+  
+  return(results)
+}
+
+# Use it
+designs_to_test <- c(
+  "~ batch",
+  "~ batch + treatment",
+  "~ batch + tumor_slope",
+  "~ batch + treatment + tumor_slope"
+)
+
+voom_results <- compare_designs_voom(count_matrix, coldata, designs_to_test)
+print(voom_results)
+
+```
+
+<br/>
+<br/>
+
+## Méthode Emilie (heatmap en colorant par variable)
+
+```{r XXX}
+
+coldata_28 <- basic_coldata[basic_coldata$SampleID != "06-006",]
+count_matrix_28 <- count_matrix[, basic_coldata$SampleID != "06-006"]
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_28,
+  colData = coldata_28,
+  design = design_29
+)
+dds$Time <- relevel(dds$Time, ref = "pre")
+dds <- DESeq(dds)
+norm_counts_28 <- assay(vst(dds, blind=FALSE))
+keep_mean <- rowMeans(norm_counts) > 10
+keep_zero <- rowSums(norm_counts == 0) / ncol(norm_counts) <= 0.90
+dds_filt <- dds[keep_mean & keep_zero, ]
+
+
+
+clust <- function(E,annot,q=0.95){
+  # top genes
+  vari <- apply(E,1,mad)
+  top <- which(vari > quantile(vari,q))
+  
+  ## mad values for prot object
+  MAD <- as.data.frame(cbind(MAD=vari,MADtop5pc=FALSE))
+  rownames(MAD) <- names(vari)
+  MAD$MADtop5pc[top] <- TRUE
+  
+  ## cluster data
+  d <- as.matrix(E)
+  a <- annot[colnames(d),]
+  
+  ## cluster colors : à adapter selon ton cas
+  sample_col <- rainbow(length(unique(annot$SampleID)))
+  names(sample_col) <- sort(unique(annot$SampleID))
+  time_col <- c("turquoise","orangered")
+  names(time_col) <- c("post","pre")
+  age_col <- rainbow(length(unique(annot$Age_cr)))
+  names(age_col) <- sort(unique(annot$Age_cr))
+  QC_col <- rainbow(length(unique(annot$QC_aligned_M_cr)))
+  names(QC_col) <- sort(unique(annot$QC_aligned_M_cr))
+  sex_col <- c("pink","cyan")
+  names(sex_col) <- c("F","M")
+  prog_col <- c("grey","black")
+  names(prog_col) <- c("0","1")
+  death_col <- c("grey","black")
+  names(death_col) <- c("0","1")
+  
+  # bcol <- rainbow(5)
+  # names(bcol) <- unique(annot$Batch)
+  # scol <- rainbow(length(unique(annot$Sample)))
+  # names(scol) <- sort(unique(annot$Sample))
+  # gpcol <- c("yellow","green","blue")
+  # names(gpcol) <- c("NR","LR","R")
+  # mcol <- c("turquoise","orangered")
+  # names(mcol) <- c("M0","M6")
+  # yobcol <- c("grey","black")
+  # names(yobcol) <- c("Bf55","Aft55")
+  
+  ## cluster legend
+  column_ha = HeatmapAnnotation(
+    Sample=a$SampleID,
+    Time=a$Time,
+    Age=a$Age_cr, 
+    QC=a$QC_aligned_M_cr,
+    Gender=a$Sex,
+    Progress=a$Prog_status,
+    Death=a$Death_status,
+    col=list(Sample=sample_col,Time=time_col,Age=age_col,QC=QC_col,Gender=sex_col,Progress=prog_col,Death=death_col
+    ))
+  
+  ## heatmap
+  h <-  Heatmap(d[top,],
+                clustering_distance_columns  = "pearson",
+                clustering_method_columns = "ward.D2",
+                clustering_distance_rows  = "pearson",
+                clustering_method_rows = "ward.D2",
+                top_annotation = column_ha)
+  
+  ## partitions
+  hc <- hclust(as.dist(1-cor(d[top,],method = "pearson")),method = "ward.D2")
+  allct <- NULL
+  for(n in 2:5){
+    ct <- cutree(hc,n)
+    allct <- rbind(allct,ct[rownames(a)])
+  }
+  rownames(allct) <- paste0(2:5,"_clusters")
+  a <- cbind(a, t(allct))
+  
+  # tests
+  varcol <- c("Time","Sex","Prog_status","Death_status")
+  varcol <- varcol[varcol %in% names(a)]
+  clcol <- paste0(2:5,"_clusters")
+  #allcol = c(varcol,clcol)
+  M <- matrix(NA,nrow=length(clcol),ncol=length(varcol))
+  aa <- a[,c(clcol,varcol)]
+  for(i in 1:length(clcol))
+    for(j in 1:length(varcol)){
+      M[i,j]  <- suppressWarnings(chisq.test(aa[,clcol[i]],aa[,varcol[j]])$p.value)
+    }
+  rownames(M) <- clcol
+  colnames(M) <- varcol
+  return(list(h=h,vari=vari,MAD=MAD,a=a,test=format(M,scientific=T,digits=3)))
+}
+
+# clustering is done from the normalised expression of the top 5% most variant proteins.
+clustE <- clust(norm_counts_28,coldata_28)
+draw(clustE$h)
+
+# P-value of the chi2 test between the clinical variables and the different partitions of the dendrogram: 
+knitr::kable(clustE$test)
+
+```
+
+
+
+# Analyse des 4 paires pre - post
+
+Design 1: ~ Age_cr + QC_aligned_M_cr + Time <br/>
+Design 2: ~ Height_cr + Age_cr + QC_aligned_M_cr + Time <br/>
+
+```{r XXX}
+
+# coldata_pairs <- basic_coldata[which(basic_coldata$SampleID %in% c("01-007", "02-001", "02-003", "02-014")),]
+# count_matrix_pairs <- count_matrix[, which(basic_coldata$SampleID %in% c("01-007", "02-001", "02-003", "02-014"))]
+
+# design_1 <- as.formula("~ Age_cr + QC_aligned_M_cr + Time + Age_cr:Time")
+# design_1_reduced <- as.formula("~ Age_cr + QC_aligned_M_cr + Time")
+# design_2 <- as.formula("~ Height_cr + Age_cr + QC_aligned_M_cr + Time + Age_cr:Time")
+# design_2_reduced <- as.formula("~ Height_cr + Age_cr + QC_aligned_M_cr + Time")
+# 
+# # Time course analyses with LRT
+# dds_reduced <- DESeq(dds_pairs, test="LRT", reduced = design_1_reduced)
+# clusters <- degPatterns(cluster_rlog, metadata = meta, time="time", col="treatment")
+
+
+design_0 <- as.formula("~ SampleID + Time")
+design_1 <- as.formula("~ Age_cr + Time")
+design_2 <- as.formula("~ Age_cr + Time + Age_cr:Time")
+design_3 <- as.formula("~ Age_cr + QC_uniq_aligned_cr + Time") # donne 802 DEGs -> je choisis de ne pas mettre la QC
+design_4 <- as.formula("~ Age_cr + QC_uniq_aligned_cr + Time + Age_cr:Time") # 52 DEGs
+# design_3 <- as.formula("~ 0 + Age_cr + Time") # https://pmc.ncbi.nlm.nih.gov/articles/PMC7873980/#sec38 -> donne 11171 DEGs (10115 après shrink), je ne le prends pas
+# design_4 <- as.formula("~ 0 + Age_cr + Time + Age_cr:Time") # 18 DEGs, les mêmes que design_2 -> pas d'intérêt quand on prend les : à la fin de la formule
+# design_5 <- as.formula("~ Time") # 43 DEGs dont 18 en commun avec design_0 (qui sont aussi en commun avec design_1 !)
+# design_6 <- as.formula("~ 0 + SampleID + Time") # 36 DEGs, tous en commun avec design_0
+# je choisis design_0 (basé sur le heatmap vs celui de design_1 avec les 49 DEG_common), qui a 28 DEGs en commun avec design_1 (dont 24 avec design_6)
+
+designs <- list(
+  design_0 = design_0,
+  design_1 = design_1,
+  design_2 = design_2,
+  design_3 = design_3,
+  design_4 = design_4
+)
+coefs <- list(
+  design_0 = "Time_post_vs_pre",
+  design_1 = "Time_post_vs_pre",
+  design_2 = "Age_cr.Timepost",
+  design_3 = "Timepost",
+  design_4 = "Age_cr.Timepost"
+)
+
+# dds_list <- list()
+# res_list <- list()
+selected_genes_list_8 <- list()
+norm.count_list_8 <- list()
+# resLFC_list <- list()
+# selected_genesLFC_list_8 <- list()
+for (i in 0:4) {
+  design_name <- paste0("design_", i)
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix_8,
+    colData = coldata_8,
+    design = designs[[design_name]]
+  )
+  if (i != 3) {
+  dds$Time <- relevel(dds$Time, ref = "pre")
+  }
+  dds <- DESeq(dds)
+  # resultsNames(dds)
+  # dds_list[[design_name]] <- dds
+  
+  norm.count <- assay(vst(dds, blind=FALSE))
+  norm.count_list_8[[design_name]] <- norm.count
+  
+  res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+  # res_list[[design_name]] <- res
+  # summary(res_prepost_1)
+  # design0 : 40 DEGs
+  # design1 : 123 DEGs
+  # design2 : 18 DEGs, complètement séparés des deux autres designs
+  # design3 : 802 DEGs 
+  # design4 : 52 DEGs
+  resOrdered <- res[order(res$padj), ]
+  selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+  selected_genes_list_8[[design_name]] <- selected_genes
+  
+  # resLFC <- lfcShrink(dds, coef=coefs[[design_name]], type="apeglm", lfcThreshold=lfc.cutoff)
+  # resLFC_list[[design_name]] <- resLFC
+  # summary(resLFC_1)
+  # resLFCordered <- resLFC[order(resLFC$svalue), ]
+  # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+  # selected_genesLFC_list_8[[design_name]] <- selected_genesLFC
+  
+  # checking the DESeq2 dispersion 
+  plotDispEsts(dds, main=paste("DESeq2 dispersion plot pairs", design_name))
+  
+  # looking at the number of outliers
+  boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance pairs", design_name))
+  
+  # MA-plot
+  # plotMA(resLFC, ylim=c(-2,2), main=paste("plotMA pairs", design_name))
+
+}
+
+venn(selected_genes_list_8)#, main="Overlap of DEGs across designs")
+# venn(selected_genesLFC_list_8)
+
+for (i in selected_genes_list_8) { print(length(i)) }
+
+# 18 gènes exclusifs des paires (!!! attention, le résultat change si je prends par exemple Sex au lieu de Age_cr -> 71 DEGs !!!) : 
+genes_design2 <- selected_genes_list_8['design_2']
+genes_design2$gene_symbol <- counts_genes$gene_name[match(genes_design2$design_2, rownames(counts_genes))]
+genes_design2$gene_symbol
+# "PABPC1L2B"       "PSPN"            "TRIM27"          "GPR89A"          "CHRM3"           "PI3"             "ENSG00000283782" "TRIAP1"          "SPRR4"           "ENSG00000285976" "HLA-E"           "TAPBP"           "PLCH2"           "MFSD8"           "RIOX1"           "CDK19"           "HPS1"            "SLC30A8"
+
+# 18 gènes en commun entre designs 0, 1 et 5 :
+genes_design0 <- selected_genes_list_8['design_0']$design_0
+genes_design1 <- selected_genes_list_8['design_1']$design_1
+genes_design5 <- selected_genes_list_8['design_5']$design_5
+genes_uniq <- genes_design0[genes_design0 %!in% genes_design1 & genes_design0 %!in% genes_design5]
+genes_symbol <- counts_genes$gene_name[match(genes_uniq, rownames(counts_genes))]
+# 18 ENSG uniques, mais seulement 12 gene_symbol
+# "COL3A1"  "JPH3"    "SBSN"    "CLDN18"  "TUBGCP5" "ITPKB"   "GNGT2"   "PALM3"   "MUC5B"   "KPRP"    "TRPV1"   "GNL1" 
+
+# heatmaps des différents designs :
+# distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+for ( i in 0:4 ) {
+  design_name <- paste0("design_", i)
+  DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_8[[design_name]], rownames(counts_genes))]
+  matrix_heatmap_8 <- norm.count_list_8[[design_name]][which(rownames(norm.count_list_8[[design_name]]) %in% selected_genes_list_8[[design_name]]),]
+  rownames(matrix_heatmap_8) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_8), rownames(counts_genes))], unique = T)
+  heatmap.2(as.matrix(matrix_heatmap_8), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+}
+
+# heatmap des DEGs_in_common (cf. rapport_LapNet_DEG_3)
+i = 1
+design_name <- paste0("design_", i)
+matrix_heatmap_8 <- norm.count_list_8[[design_name]][which(rownames(norm.count_list_8[[design_name]]) %in% DEGs_in_common),]
+rownames(matrix_heatmap_8) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_8), rownames(counts_genes))], unique = T)
+heatmap.2(as.matrix(matrix_heatmap_8), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+```
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

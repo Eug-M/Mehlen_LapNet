@@ -1,0 +1,465 @@
+---
+title: "LapNet DEG"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Lapnet/"
+setwd(path)
+
+WKDIR <- paste0(path,"/DE_analysis")
+setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies and functions, results = "hide", include=F}
+library("DESeq2")
+library("rtracklayer")
+library("SummarizedExperiment")
+library("pheatmap")
+library("RColorBrewer")
+library("dplyr")
+library("ggplot2")
+library("apeglm")
+library("ggrepel")
+library("DEGreport")
+library("gridExtra")
+library("factoextra")
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+# Objectif
+
+Etudier les gènes différentiellement exprimés sur les données LapNet.
+
+Remarque : comme un seul individu a une progression de type PD, nous allons grouper cette catégorie avec les individus SD, car le PD devrait 'tirer' les SD vers les moins bons pronostics.
+
+# Vérifications sur le jeu de données entier
+
+Analyse combinée des 23 samples pre et 6 samples post.
+
+```{r creating dataframes}
+
+# colData
+coldata <- read.csv('./colData_LapNet.csv', sep=";")
+coldata$Best_response_2 <- case_when(
+  coldata$Best_response == "SD" ~ "SD_PD",
+  coldata$Best_response == "PD" ~ "SD_PD", 
+  coldata$Best_response == "PR" ~ "PR",
+  TRUE ~ NA_character_  # for any unexpected values
+)
+# scale and center the numeric columns
+numeric_columns <- c('Age', 'Height', 'Weight', 'BMI', 'Size_lesion_C0', 'Size_lesion_C4', 'Size_lesion_C8', 'Size_lesion_C12', 
+                     'best_lesion_perc', 'OS', 'PFS', 'Surgery', 'QC_duplication_perc', 'QC_aligned_M', 'QC_uniq_aligned')
+for (numeric_col in numeric_columns) {
+  coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
+}
+#coldata[paste0(numeric_columns, "_cr")] <- lapply(coldata[numeric_columns], scale)
+# convert to factors the non-numeric columns
+factor_columns <- colnames(coldata) %!in% numeric_columns
+coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
+
+# countData (gene counts, not transcript's)
+counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# we need integers for DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+#counts_genes <- as.matrix(counts_genes)
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+
+count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
+rownames(count_matrix) <- count_matrix_pcg$gene_name  # Gene names become row names
+print(c('checkpoint, number of duplicated genes: ', sum(duplicated(rownames(count_matrix)))))
+# dup_genes <- count_matrix_pcg[duplicated(count_matrix_pcg$gene_name),'gene_name']
+# rownames(count_matrix_pcg)[count_matrix_pcg$gene_name == 'TUBB']
+
+basic_coldata <- data.frame(coldata, row.names = count_columns)
+# checking that the rows of the metadata table and the columns of the expression matrix must have the same name and same order
+print(c('checkpoint, TRUE if data importation is correct: ', sum(rownames(basic_coldata) == colnames(count_matrix)) == length(rownames(basic_coldata))))
+
+```
+
+## Vérifications sur le jeu de données global 
+
+```{r data overview}
+
+# Set thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+
+dds_sex <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = basic_coldata,
+  design = ~ Sex
+)
+
+dds_sex <- DESeq(dds_sex)
+
+norm.count <- as.data.frame(counts(dds_sex, normalized=TRUE))
+
+res_sex <- results(dds_sex, alpha=padj.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+# summary(res_sex)
+
+# checking the DESeq2 dispersion 
+plotDispEsts(dds_sex, main="DESeq2 dispersion plot")
+
+# looking at the number of outliers
+boxplot(log10(assays(dds_sex)[["cooks"]]), range=0, las=2, main="Number of outliers (attribute 'Sex'): Cooks' distance")
+
+```
+
+## PCAs méthode 1 : {.tabset}
+
+### axis 1/2
+
+```{r PCA ax1-2 v1, fig.width=12, fig.height=6}
+
+rld <- rlog(dds_sex, blind=TRUE)
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+to_be_plotted <- c("SampleID", "Time", "Age", "Sex", "BMI", "Size_lesion_C0", "best_lesion_perc", "OS", "Death_status", "PFS", "Prog_status", "Surg_status", "QC_duplication_perc", "QC_aligned_M", "QC_uniq_aligned", "Best_response_2")
+
+# create_myPCAplots_withLegend <- function(df, column, PCx, PCy) {
+#   pcaData <- plotPCA(rld, intgroup=column, pcsToUse=c(PCx,PCy), returnData=TRUE) #, ntop=1000)
+#   percentVar <- round(100 * attr(pcaData, "percentVar"))
+#   x <- paste0('PC', PCx)
+#   y <- paste0('PC', PCy)
+#   if (column %in% numeric_columns) {
+#     sc_color <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(df[,which(colnames(df) == column)]), max(df[,which(colnames(df) == column)])))
+#     return(ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group, label=rownames(df))) +
+#     geom_point(size=3) +
+#     xlab(paste0("PC", PCx, ": ", percentVar[1], "% variance")) +
+#     ylab(paste0("PC", PCy, ": ", percentVar[2], "% variance")) + 
+#     labs(color=column) +
+#     #geom_text(aes(label=rownames(df)),hjust=.5, vjust=-.8, size=3) +
+#     geom_text_repel(hjust="top", vjust="top") +
+#     geom_density2d(alpha=.5) +
+#     coord_fixed() +
+#     sc_color)
+#   }
+#   else {
+#     return(ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group, label=rownames(df))) +
+#     geom_point(size=3) +
+#     xlab(paste0("PC", PCx, ": ", percentVar[1], "% variance")) +
+#     ylab(paste0("PC", PCy, ": ", percentVar[2], "% variance")) + 
+#     labs(color=column) +
+#     geom_text_repel(hjust="top", vjust="top") +
+#     geom_density2d(alpha=.5) +
+#     coord_fixed())
+#   }
+# }
+
+create_myPCAplots <- function(df, column, PCx, PCy) {
+  pcaData <- plotPCA(rld, intgroup=column, pcsToUse=c(PCx,PCy), returnData=TRUE) #, ntop=1000)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  percent_x <- paste0(percentVar[1], "%")
+  percent_y <- paste0(percentVar[2], "%")
+  x <- paste0('PC', PCx)
+  y <- paste0('PC', PCy)
+  if (column %in% numeric_columns) {
+    sc_color <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(df[,which(colnames(df) == column)]), max(df[,which(colnames(df) == column)])))
+    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group, label=rownames(df))) +
+    geom_point(size=3) +
+    ggtitle(column) +
+    # theme(plot.title = element_text(hjust=0.95, vjust=0.15, margin = margin(t = -20, b = 10, r = 5), size=11),
+    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
+    geom_text_repel(hjust="top", vjust="top") +
+    geom_density2d(alpha=.5) +
+    coord_fixed() +
+    sc_color
+    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
+  }
+  else {
+    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group, label=rownames(df))) +
+    geom_point(size=3) +
+    ggtitle(column) +
+    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
+    geom_text_repel(hjust="top", vjust="top") +
+    geom_density2d(alpha=.5) +
+    coord_fixed()
+    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
+  }
+}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(basic_coldata, column, 1, 2)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`
+
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+### axis 1/3
+```{r PCA ax1-3 v1, fig.width=13, fig.height=20}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(basic_coldata, column, 1, 3)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`
+
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+### axis 1/4
+```{r PCA ax1-4 v1, fig.width=13, fig.height=20}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(basic_coldata, column, 1, 4)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`
+
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+### axis 1/5
+```{r PCA ax1-5 v1, fig.width=13, fig.height=20}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(basic_coldata, column, 1, 5)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`
+
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+## PCAs méthode 2 : {.tabset}
+
+### axis 1/2
+
+```{r PCA ax1-2, fig.width=13, fig.height=20}
+
+# rld <- rlog(dds_sex, blind=TRUE)
+# myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+# to_be_plotted <- c("SampleID", "Time", "Age", "Sex", "BMI", "Size_lesion_C0", "best_lesion_perc", "OS", "Death_status", "PFS", "Prog_status", "Surg_status", "QC_duplication_perc", "QC_aligned_M", "QC_uniq_aligned", "Best_response_2")
+
+rld_mat <- assay(rld)
+pca <- prcomp(t(rld_mat))#, scale=TRUE) # renvoit une erreur "impossible de standardiser une constante/une colonne nulle"
+df <- cbind(basic_coldata, pca$x)
+
+create_myPCAplots <- function(df, column, PCx, PCy) {
+  x <- paste0('PC', PCx)
+  y <- paste0('PC', PCy)
+  if (column == 'SampleID') {
+    return(ggplot(df) +
+      geom_point(aes(x=.data[[x]], y=.data[[y]], color=.data[[column]])) +
+      geom_text_repel(aes(x=.data[[x]], y=.data[[y]], label=rownames(df)), hjust="top", vjust="top") +
+      theme(legend.title=element_blank()) +
+      ggtitle(column))
+  }
+  else if (column %in% numeric_columns) {
+    sc_color <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(df[,which(colnames(df) == column)]), max(df[,which(colnames(df) == column)])))
+    return(ggplot(df) +
+      geom_point(aes(x=.data[[x]], y=.data[[y]], color=.data[[column]])) +
+      ggtitle(column) +
+      #geom_text_repel(aes(x=.data[[x]], y=.data[[y]], label=rownames(df)), hjust="top", vjust="top") +
+      theme(legend.title=element_blank()) +
+      sc_color)
+  }
+  else {
+    return(ggplot(df) +
+      geom_point(aes(x=.data[[x]], y=.data[[y]], color=.data[[column]])) +
+      #geom_text_repel(aes(x=.data[[x]], y=.data[[y]], label=rownames(df)), hjust="top", vjust="top") +
+      theme(legend.title=element_blank()) +
+      ggtitle(column))
+  }
+}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  plot_list[[column]] <- create_myPCAplots(df, column, 1, 2)
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+<br/>
+<br/>
+
+### axis 1/3
+```{r PCA ax1-3, fig.width=13, fig.height=20}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  plot_list[[column]] <- create_myPCAplots(df, column, 1, 3)
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+<br/>
+<br/>
+
+### axis 1/4
+```{r PCA ax1-4, fig.width=13, fig.height=20}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  plot_list[[column]] <- create_myPCAplots(df, column, 1, 4)
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+<br/>
+<br/>
+
+### axis 1/5
+```{r PCA ax1-5, fig.width=13, fig.height=20}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  plot_list[[column]] <- create_myPCAplots(df, column, 1, 5)
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+<br/>
+<br/>
+
+### scree plot
+```{r PCA scree plot}
+
+# rld_mat <- assay(rld)
+# pca <- prcomp(t(rld_mat))
+fviz_eig(pca)
+
+```
+
+<br/>
+<br/>
+
+### contributions of individual samples to PCs 1-6
+```{r PCA contribution of samples}
+
+plot_list <- list()
+for (axe in 1:6) {
+  plot_list[[axe]] <- fviz_contrib(pca, choice = "ind", axes = axe, ggtheme = theme_minimal() + theme(axis.text.x=element_text(size=8, angle=45)) )
+}
+grid.arrange(grobs = plot_list, ncol=2, nrow=3)
+
+```
+
+<br/>
+<br/>
+
+
+## Hierarchical Clustering Heatmaps : 
+
+```{r heatmaps}
+
+rld_cor_p <- cor(rld_mat)
+pheatmap(rld_cor_p, main="pairwise Pearson correlations")
+
+rld_cor_s <- cor(rld_mat, method="spearman")
+pheatmap(rld_cor_s, main="pairwise Spearman correlations")
+
+```
+
+# Versions of all tools used in the DE analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

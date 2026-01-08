@@ -1,0 +1,1374 @@
+---
+title: "Lapnet"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r librairies, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+library("RColorBrewer")
+library("dplyr")
+library("ggplot2")
+library(gridExtra)
+library("tidyverse")
+library("viridis")
+library('survival')
+library(ranger)
+library(ggfortify)
+library(survminer)
+library(KMEANS.KNN)
+library(factoextra)
+library(GSVA)
+library(gplots)
+library("DESeq2")
+library(ggrepel)
+library(AnnotationDbi) 
+library(org.Hs.eg.db)
+library(GenomicFeatures)
+library(estimate)
+library(tibble)
+library(rtracklayer)
+```
+
+# Objectif
+
+Etudier le lien entre niveau de Neogenin et survie sur les données LapNet.
+
+Remarque : comme un seul individu a une progression de type PD, nous allons grouper cette catégorie avec les individus SD, car le PD devrait 'tirer' les SD vers les moins bons pronostics.
+
+## Vérifications sur le jeu de données
+
+Les gènes NTN1, NEO1 et UNC5B sont bien exprimés dans les 29 échantillons (23 'pre' et 6 'post') :
+
+```{r donnees cliniques et expression des genes d interet}
+coldata <- read.csv('/home/eugenie-modolo/Documents/Lapnet/colData_LapNet.csv', sep=";")
+coldata$Best_response_2 <- case_when(
+  coldata$Best_response == "SD" ~ "SD_PD",
+  coldata$Best_response == "PD" ~ "SD_PD", 
+  coldata$Best_response == "PR" ~ "PR",
+  TRUE ~ NA_character_  # for any unexpected values
+)
+
+counts_genes <- read.table("/home/eugenie-modolo/Documents/Lapnet/results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+
+# on modifie la matrix count_genes pour les 3 gènes qui sont en doublons pour les 200 gènes d'intérêt
+counts_genes[which(row.names(counts_genes)=='ENSG00000291748.1'),'gene_name'] <- 'COL3A1_2' 
+counts_genes[which(row.names(counts_genes)=='ENSG00000276886.4'),'gene_name'] <- 'GREM1_2' 
+counts_genes[which(row.names(counts_genes)=='ENSG00000282049.1'),'gene_name'] <- 'PRSS2_2'
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# besoin de prendre les integers pour DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+count_matrix <- as.matrix(counts_genes[, count_columns])
+
+basic_coldata <- data.frame(coldata, row.names = count_columns)
+
+# # on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code, pour que le ssGSEA fonctionne -> bof car le ssGSEA ne pourra pas les traiter
+# dup_genes <- counts_genes[duplicated(counts_genes$gene_name),'gene_name']
+# counts_genes$feature <- ifelse((is.na(counts_genes$gene_name) | counts_genes$gene_name %in% dup_genes), rownames(counts_genes), counts_genes$gene_name)
+# count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name" & colnames(counts_genes) != "feature"]
+# count_matrix <- as.matrix(counts_genes[, count_columns])
+# rownames(count_matrix) <- counts_genes$feature
+
+# # normalisation des counts par DESeq2
+# # /!\ il peut être utile de retirer les gènes pas assez exprimés ...
+# dds <- DESeqDataSetFromMatrix(
+#   countData = count_matrix,
+#   colData = basic_coldata,
+#   design = ~ Best_response_2
+# )
+# dds <- DESeq(dds)
+# norm.count <- as.data.frame(counts(dds, normalized=TRUE))
+
+# adding gene length to counts_genes
+txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf",format="gtf")
+# collect the exons per gene id
+exons.list.per.gene <- exonsBy(txdb,by="gene")
+# then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
+exonic.gene.sizes <- as.data.frame(sum(width(GenomicRanges::reduce(exons.list.per.gene))))
+match_index <- match(rownames(counts_genes), rownames(exonic.gene.sizes))
+counts_genes$gene_length <- exonic.gene.sizes[match_index, 1]
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
+
+# Working with gene symbols
+count_matrix_genesymbol <- count_matrix
+rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
+count_matrix_pcg_genesymbol <- count_matrix_pcg
+rownames(count_matrix_pcg_genesymbol) <- counts_genes[which(rownames(counts_genes) %in% rownames(count_matrix_pcg)), 'gene_name']
+# duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function ...)
+count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
+count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = basic_coldata,
+  design = ~ Best_response_2
+)
+dds <- DESeq(dds)
+norm.count <- as.data.frame(counts(dds, normalized=TRUE))
+
+# expressions for GSEA: normalised and divided by length
+dds_gene_symbol <- DESeqDataSetFromMatrix(
+  countData = count_matrix_genesymbol,
+  colData = basic_coldata,
+  design = ~ Best_response_2
+)
+dds_gene_symbol <- DESeq(dds_gene_symbol)
+norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
+norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+
+genes_of_interest <- c('NTN1', 'EPCAM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'VIM', 'TFF3')
+expression_genes <- norm.count_genesymbol[which(row.names(norm.count_genesymbol) %in% genes_of_interest),]
+t_expression_genes <- data.frame(t(expression_genes))
+for (gene in genes_of_interest) {
+  basic_coldata[[gene]] <- t_expression_genes[[gene]]
+  basic_coldata[[paste0(gene, "_log")]] <- log2(t_expression_genes[[gene]] + 1)
+}
+
+# draw basic_coldata table
+as.matrix(basic_coldata) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(basic_coldata),fontSize = '80%')
+
+basic_coldata_pre <- basic_coldata[which(basic_coldata$Time == 'pre' & basic_coldata$SampleID != '06-006'),]
+
+create_gene_histograms <- function(gene_name, df) {
+  gene_log <- paste0(gene_name, "_log")
+  
+  p1 <- ggplot(df, aes(x = .data[[gene]])) + 
+    geom_histogram() +
+    ggtitle(paste0("Histogram", gene_name))
+  
+  p2 <- ggplot(df, aes(x = .data[[gene_log]])) + 
+    geom_histogram() +
+    ggtitle(paste0("Histogram log2(", gene_name, "+1)"))
+  
+  grid.arrange(p1, p2, nrow = 1)
+}
+
+for (gene in genes_of_interest) {
+  create_gene_histograms(gene, basic_coldata_pre)
+}
+
+```
+
+Remarques : (i) à partir de maintenant, nous n'allons travailler que sur les échantillons 'pre', car ce sont les seuls pour lesquels on peut étudier la prédiction de survie ; (ii) nous retirons de l'étude l'échantillon 06-006, qui a une QC très mauvaise et qui n'exprime pas NEO1 alors qu'il est classé PR. Nous travaillons donc sur 22 échantillons.
+
+Courbe corrélation log2(NEO1+1) et OS/PFS pour les 22 patients pré :
+
+```{r corr log2 Neogenin OS/PFS}
+
+p1 <- ggscatter(data = basic_coldata[which(basic_coldata$Time == 'pre' & basic_coldata$SampleID != '06-006'),],
+          x = 'OS',
+          y = 'NEO1_log',
+          color = 'blue',
+          cor.method = "spearman",
+          cor.coef = TRUE,
+          conf.int = TRUE,
+          add = "reg.line",
+          add.params = list(color = 'salmon'),
+)
+
+p2 <- ggscatter(data = basic_coldata[which(basic_coldata$Time == 'pre' & basic_coldata$SampleID != '06-006'),],
+          x = 'PFS',
+          y = 'NEO1_log',
+          color = 'blue',
+          cor.method = "spearman",
+          cor.coef = TRUE,
+          conf.int = TRUE,
+          add = "reg.line",
+          add.params = list(color = 'salmon'),
+)
+
+grid.arrange(p1, p2, nrow = 1)
+
+```
+
+## Choix des seuils Neogenin High et Low
+
+Le log2 de la Neogenin suit bien une loi ~gaussienne :
+
+```{r log2 Neogenin}
+
+ggplot(basic_coldata_pre,
+       aes(x=NEO1_log)) +
+  geom_histogram()
+
+```
+
+Valeurs des gènes d'intérêt selon le niveau de réponse :
+
+```{r violin and box plots}
+My_Theme <- theme(plot.title=element_text(size=10),
+#        legend.title = element_text(size = 5), 
+#        legend.text = element_text(size = 5),
+#        legend.key.size = unit(0.2, 'cm'),
+        legend.position="none",
+        axis.text=element_text(size=7),
+        axis.title=element_text(size=8))
+
+p1 <- ggplot(basic_coldata_pre, 
+       aes(x=Best_response_2, y=NTN1, fill=Best_response_2)) + 
+  geom_violin() +
+  My_Theme +
+  ggtitle("Violin chart NTN1")
+p2 <- ggplot(basic_coldata_pre, 
+             aes(x=Best_response_2, y=NTN1_log, fill=Best_response_2)) + 
+  geom_violin() +
+  My_Theme +
+  ggtitle("Violin chart log2(NTN1+1)")
+p3 <- ggplot(basic_coldata_pre, 
+             aes(x=Best_response_2, y=NTN1_log, fill=Best_response_2)) + 
+  geom_boxplot(notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  My_Theme +
+  ggtitle("Boxplot log2(NTN1+1)")
+p4 <- ggplot(basic_coldata_pre, 
+       aes(x=Best_response_2, y=NEO1, fill=Best_response_2)) + 
+  geom_violin() +
+  My_Theme +
+  ggtitle("Violin chart NEO1")
+p5 <- ggplot(basic_coldata_pre, 
+             aes(x=Best_response_2, y=NEO1_log, fill=Best_response_2)) + 
+  geom_violin() +
+  My_Theme +
+  ggtitle("Violin chart log2(NEO1+1)")
+p6 <- ggplot(basic_coldata_pre, 
+             aes(x=Best_response_2, y=NEO1_log, fill=Best_response_2)) + 
+  geom_boxplot(notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  My_Theme +
+  ggtitle("Boxplot log2(NEO1+1)")
+p7 <- ggplot(basic_coldata_pre, 
+       aes(x=Best_response_2, y=UNC5B, fill=Best_response_2)) + 
+  geom_violin() +
+  My_Theme +
+  ggtitle("Violin chart UNC5B")
+p8 <- ggplot(basic_coldata_pre, 
+             aes(x=Best_response_2, y=UNC5B_log, fill=Best_response_2)) + 
+  geom_violin() +
+  My_Theme +
+  ggtitle("Violin chart log2(UNC5B+1)")
+p9 <- ggplot(basic_coldata_pre, 
+             aes(x=Best_response_2, y=UNC5B_log, fill=Best_response_2)) + 
+  geom_boxplot(notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  My_Theme +
+  ggtitle("Boxplot log2(UNC5B+1)")
+
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, nrow = 3)
+```
+
+
+## Survival plots selon le niveau de réponse
+
+```{r Kaplan-Meier plots niveau de reponse}
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Best_response_2, data=basic_coldata_pre)
+# autoplot(km_fit_os)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Best response",       # legend characteristics
+  legend.labs = c("PR","SD_PD"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Best_response_2, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Best response",       # legend characteristics
+  legend.labs = c("PR","SD_PD"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+
+## Survival plots selon la Neogenin en séparant avec la médiane (6.19)
+
+```{r Kaplan-Meier plots Neogenin median}
+basic_coldata_pre$NEO1_level <- case_when(
+  basic_coldata_pre$NEO1_log >= 6.19 ~ "High",
+  basic_coldata_pre$NEO1_log < 6.19 ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médiane OS des 22 patients : `r median(survfit(Surv(OS, Death_status) ~ 1, data=basic_coldata_pre))[[1]]` ; Médiane PFS des 22 patients : `r median(survfit(Surv(PFS, Prog_status) ~ 1, data=basic_coldata_pre))[[1]]`
+
+(sans retirer 06-006 : Médiane OS des 23 patients : `r median(survfit(Surv(OS, Death_status) ~ 1, data=basic_coldata[which(basic_coldata$Time == 'pre'),]))[[1]]` ; Médiane PFS des 23 patients : `r median(survfit(Surv(PFS, Prog_status) ~ 1, data=basic_coldata[which(basic_coldata$Time == 'pre'),]))[[1]]`)
+
+Médianes OS selon niveau de Neogenin : High
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre))[[1]]` (NA car on a moins de 50% de décès), Low `r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre))[[2]]`
+
+Médianes PFS selon niveau de Neogenin : High
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre))[[2]]`
+
+
+## Survival plots selon la Neogenin sans log2(+1) en séparant avec la médiane
+
+```{r Kaplan-Meier plots Neogenin median without log2}
+basic_coldata_pre$NEO1_level_sanslog <- case_when(
+  basic_coldata_pre$NEO1 >= median(basic_coldata_pre$NEO1) ~ "High",
+  basic_coldata_pre$NEO1 < median(basic_coldata_pre$NEO1) ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ NEO1_level_sanslog, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ NEO1_level_sanslog, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon niveau de Neogenin : High
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level_sanslog, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(OS, Death_status) ~ NEO1_level_sanslog, data=basic_coldata_pre))[[2]]`
+
+Médianes PFS selon niveau de Neogenin : High
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level_sanslog, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level_sanslog, data=basic_coldata_pre))[[2]]`
+
+
+## Survival plots selon la Neogenin en séparant avec k-means (5.5) = 2/3 dans le High
+
+```{r k-means, results = "hide", include=F}
+km.out <- kmeans(basic_coldata_pre$NEO1_log, centers = 2)
+km.out
+basic_coldata_pre$NEO1_log
+```
+
+
+```{r Kaplan-Meier plots Neogenin kmeans}
+basic_coldata_pre$NEO1_level2 <- case_when(
+  basic_coldata_pre$NEO1_log >= 5.5 ~ "High",
+  basic_coldata_pre$NEO1_log < 5.5 ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ NEO1_level2, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level k-means",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level k-means",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon niveau de Neogenin k-means : High
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level2, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(OS, Death_status) ~ NEO1_level2, data=basic_coldata_pre))[[2]]`
+
+Médianes PFS selon niveau de Neogenin k-means : High
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level2, data=basic_coldata_pre))[[2]]`
+
+
+## Modification du seuil Neogenin High (1/3 - 2/3)
+
+Valeur limite pour séparer en 1/3 High - 2/3 Low les niveaux de Neogenin (log2) : entre `r basic_coldata_pre[order(basic_coldata_pre$NEO1_log, decreasing = F),'NEO1_log'][14]` et `r basic_coldata_pre[order(basic_coldata_pre$NEO1_log, decreasing = F),'NEO1_log'][15]`
+
+```{r Kaplan-Meier plots Neogenin 1 tiers}
+basic_coldata_pre$NEO1_level3 <- case_when(
+  basic_coldata_pre$NEO1_log >= 6.31 ~ "High",
+  basic_coldata_pre$NEO1_log < 6.31 ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ NEO1_level3, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level 1/3 High",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level 1/3 High",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon niveau de Neogenin 1/3 : High
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level3, data=basic_coldata_pre))[[1]]` (NA car on a moins de 50% de décès), Low `r median(survfit(Surv(OS, Death_status) ~ NEO1_level3, data=basic_coldata_pre))[[2]]`
+
+Médianes PFS selon niveau de Neogenin 1/3 : High
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level3, data=basic_coldata_pre))[[2]]`
+
+
+## EMT scores - Hallmark (200 gènes, utilisation des counts TPM)
+
+En prenant les 200 gènes EMT de Hallmark et avec les counts TPM, on obtient les scores EMT suivants en ssGSEA :
+
+```{r score EMT ssGSEA}
+tmp <- read.csv('/home/eugenie-modolo/Documents/Reference_files/HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION.v2025.1.Hs.tsv', sep="\t")
+list_genes_Hallmark <- unlist(strsplit(tmp[17,2], ","))
+
+# on ne garde que les 22 échantillons d'intérêt pour lancer ssGSEA
+count_matrix_pre <- norm.count_genesymbol_K[,c("01-001_pre","01-003_pre","01-004_pre",
+                        "01-006_pre","01-007_pre","01-011_pre","01-012_pre","02-001_pre","02-002_pre","02-003_pre",
+                        "02-006_pre","02-010_pre","02-014_pre","03-002_pre","03-003_pre","03-006_pre","06-001_pre",
+                        "06-007_pre","06-008_pre","06-009_pre","08-001_pre","08-002_pre")]
+
+# ssGSEA
+list_genes_ssgsea <- list(list_genes_Hallmark, "")
+names(list_genes_ssgsea) <- c("EMT", "")
+gsvaparams <- gsvaParam(count_matrix_pre,
+                        list_genes_ssgsea)
+result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+scores_EMT <- result_gsva[1,]
+basic_coldata_pre$Hallmark_score <- scores_EMT
+
+# plot
+hist(basic_coldata_pre$Hallmark_score)
+```
+
+On coupe les valeurs à un score de 0 (confirmé par k-means). Cela donne les survival plots suivants :
+
+```{r Kaplan-Meier plots EMT score Hallmark}
+basic_coldata_pre$EMT_s_level <- case_when(
+  basic_coldata_pre$Hallmark_score >= 0 ~ "High",
+  basic_coldata_pre$Hallmark_score < 0 ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ EMT_s_level, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon Score EMT : High
+`r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=basic_coldata_pre))[[2]]` (NA car on a moins de 50% de décès).
+
+Médianes PFS selon Score EMT : High
+`r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=basic_coldata_pre))[[2]]`
+
+Etude du heatmap selon les 200 gènes Hallmark :
+
+```{r score EMT Heatmap}
+
+distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+
+expression_genes_200 <- count_matrix_pre[which(row.names(count_matrix_pre) %in% list_genes_Hallmark),]
+hm <- heatmap.2(as.matrix(log2(expression_genes_200+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+target <- colnames(expression_genes_200)[hm$colInd]
+basic_coldata_pre$row.names <- rownames(basic_coldata_pre)
+basic_coldata_pre %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=Hallmark_score)) +
+  geom_point() +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+```
+
+## Survival plots selon TFF3 en séparant avec la médiane (0)
+
+```{r Kaplan-Meier plots TFF3 median}
+basic_coldata_pre$TFF3_level <- case_when(
+  basic_coldata_pre$TFF3_log > 0 ~ "High",
+  basic_coldata_pre$TFF3_log == 0 ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ TFF3_level, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "TFF3 level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ TFF3_level, data=basic_coldata_pre)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "TFF3 level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon niveau de TFF3 : High
+`r median(survfit(Surv(OS, Death_status) ~ TFF3_level, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(OS, Death_status) ~ TFF3_level, data=basic_coldata_pre))[[2]]`
+
+Médianes PFS selon niveau de TFF3 : High
+`r median(survfit(Surv(PFS, Prog_status) ~ TFF3_level, data=basic_coldata_pre))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ TFF3_level, data=basic_coldata_pre))[[2]]`
+
+## Comparaison EMT score pour les 4 duo pre-post
+
+```{r score EMT pre-post ssGSEA}
+# on ne garde que les 8 échantillons d'intérêt 
+target <- c("01-007_pre","01-007_post","02-001_pre","02-001_post","02-003_pre",
+            "02-003_post","02-014_pre","02-014_post")
+basic_coldata_prepost <- basic_coldata[which(rownames(basic_coldata) %in% target),]
+count_matrix_prepost <- norm.count_genesymbol_K[,target]
+
+# ssGSEA Hallmark
+gsvaparams <- gsvaParam(count_matrix_prepost,
+                        list_genes_ssgsea)
+result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+scores_EMT <- result_gsva[1,]
+basic_coldata_prepost$Hallmark_score <- scores_EMT
+
+# Mak score
+tmp <- read.csv('/home/eugenie-modolo/Documents/Reference_files/EMT-MAK2015.csv', sep=";")
+list_genes_M <- tmp[which(tmp$Type == 'M'), 'gene_name']
+list_genes_E <- tmp[which(tmp$Type == 'E'), 'gene_name']
+list_genes_Mak <- c(list_genes_M, list_genes_E)
+expression_genes_M <- count_matrix_prepost[which(row.names(count_matrix_prepost) %in% list_genes_M),]
+expression_genes_E <- count_matrix_prepost[which(row.names(count_matrix_prepost) %in% list_genes_E),]
+# data.frame(t(expression_genes_M))
+basic_coldata_prepost$Mak_score <- NA
+basic_coldata_prepost$E_score <- NA
+for (sample in rownames(basic_coldata_prepost)) {
+  basic_coldata_prepost[sample, 'Mak_score'] <- mean(expression_genes_M[,sample]) - mean(expression_genes_E[,sample])
+  basic_coldata_prepost[sample, 'E_score'] <- mean(expression_genes_E[,sample])
+}
+
+# plot
+hist(basic_coldata_prepost$Hallmark_score)
+hist(basic_coldata_prepost$Mak_score)
+```
+
+EMT score selon pre/post :
+
+```{r score EMT pre-post comparaison}
+basic_coldata_prepost$row.names <- rownames(basic_coldata_prepost)
+ggplot(basic_coldata_prepost, aes(x=row.names, y=Hallmark_score, col=Time)) +
+  geom_point() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+```
+
+Etude du heatmap selon les 200 gènes Hallmark : (non fait)
+
+```{r score EMT pre-post Heatmap}
+# expression_genes_200 <- count_matrix_prepost[which(row.names(count_matrix_prepost) %in% list_genes_Hallmark),]
+# heatmap.2(as.matrix(log2(expression_genes_200+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+# 
+# target <- c("02-006_pre", "06-009_pre", "06-008_pre", "01-003_pre", 
+#             "06-007_pre", "03-002_pre", "03-006_pre", "02-002_pre", "01-012_pre", "02-003_pre", "06-001_pre", 
+#             "08-002_pre", "01-006_pre", "01-007_pre", "01-004_pre", "03-003_pre", "08-001_pre", "01-011_pre", 
+#             "02-001_pre", "02-010_pre", "01-001_pre", "02-014_pre")
+# basic_coldata_pre$row.names <- rownames(basic_coldata_pre)
+# basic_coldata_pre %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=Hallmark_score)) +
+#   geom_point() +
+#   theme_bw()+ 
+#   theme(axis.text.x = element_text(angle=-40, hjust=.1))
+```
+
+
+## EMT score des 6 échantillons post vs 22 échantillons pré
+
+```{r score EMT post ssGSEA}
+# ssGSEA Hallmark
+gsvaparams <- gsvaParam(norm.count_genesymbol_K,
+                        list_genes_ssgsea)
+result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+scores_EMT <- result_gsva[1,]
+basic_coldata$Hallmark_score <- scores_EMT
+
+# Mak score
+expression_genes_M <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_M),]
+expression_genes_E <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_E),]
+# data.frame(t(expression_genes_M))
+basic_coldata$Mak_score <- NA
+basic_coldata$E_score <- NA
+for (sample in rownames(basic_coldata)) {
+  basic_coldata[sample, 'Mak_score'] <- mean(expression_genes_M[,sample]) - mean(expression_genes_E[,sample])
+  basic_coldata[sample, 'E_score'] <- mean(expression_genes_E[,sample])
+}
+
+# plot
+hist(basic_coldata[which(basic_coldata$SampleID != "06-006"),]$Hallmark_score)
+hist(basic_coldata[which(basic_coldata$SampleID != "06-006"),]$Mak_score)
+```
+
+EMT scores des 6 post vs 22 pre :
+
+```{r score EMT post}
+basic_coldata$row.names <- rownames(basic_coldata)
+
+p1 <- ggplot(basic_coldata[which(basic_coldata$SampleID != "06-006"),], aes(x=row.names, y=Hallmark_score, col=Time)) +
+  geom_point() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+p2 <- ggplot(basic_coldata[which(basic_coldata$SampleID != "06-006"),], aes(x=Hallmark_score, y=Time, fill=Time)) +
+  geom_boxplot(notch = TRUE) 
+
+p3 <- ggplot(basic_coldata[which(basic_coldata$SampleID != "06-006"),], aes(x=row.names, y=Mak_score, col=Time)) +
+  geom_point() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+p4 <- ggplot(basic_coldata[which(basic_coldata$SampleID != "06-006"),], aes(x=Mak_score, y=Time, fill=Time)) +
+  geom_boxplot(notch = TRUE) 
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+```
+
+EMT scores des Collisson QM (2 post vs 3 pre) :
+
+```{r score EMT post Collisson QM}
+p1 <- ggplot(basic_coldata[which(basic_coldata$Classif_collisson == "QM"),], aes(x=row.names, y=Hallmark_score, col=Time)) +
+  geom_point() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+p2 <- ggplot(basic_coldata[which(basic_coldata$Classif_collisson == "QM"),], aes(x=Hallmark_score, y=Time, fill=Time)) +
+  geom_boxplot(notch = TRUE) 
+
+p3 <- ggplot(basic_coldata[which(basic_coldata$Classif_collisson == "QM"),], aes(x=row.names, y=Mak_score, col=Time)) +
+  geom_point() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+p4 <- ggplot(basic_coldata[which(basic_coldata$Classif_collisson == "QM"),], aes(x=Mak_score, y=Time, fill=Time)) +
+  geom_boxplot(notch = TRUE) 
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+```
+
+Lien entre les classifications de PDAC et les EMT scores, pour les 6 échantillons post :
+
+```{r boxplots EMT score Hallmark vs classification}
+
+create_classif_boxplots <- function(classif, classif_col, df1, df2) {
+  p1 <- ggplot(df1, aes(x = .data[[classif_col]], y=Hallmark_score, fill=.data[[classif_col]])) + 
+  geom_boxplot(notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste0("EMT Hallmark score", classif, "LapNet")) 
+
+  p2 <- ggplot(df1, aes(x = .data[[classif_col]], y=Mak_score, fill=.data[[classif_col]])) + 
+  geom_boxplot(notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste0("EMT Mak score", classif, "LapNet"))
+  
+  grid.arrange(p1, p2, nrow = 1)
+}
+
+for (classif in c('collisson', 'moffitt', 'bailey')) {
+  classif_col <- paste0("Classif_", classif)
+  create_classif_boxplots(classif, classif_col, basic_coldata[which(basic_coldata$Time == "post"),])
+}
+
+```
+
+
+## Comparaison expression Neogenin et EMT score, sur les 28 échantillons
+
+```{r comparaison Neogenin et EMT-score}
+# # ssGSEA
+# gsvaparams <- gsvaParam(norm.count_K,
+#                         list_genes_ssgsea)
+# result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+# scores_EMT <- result_gsva[1,]
+# basic_coldata$Hallmark_score <- scores_EMT
+
+ggplot(basic_coldata[which(basic_coldata$SampleID != "06-006"),], aes(x=NEO1_log, y=Hallmark_score, col=Time, label=SampleID)) +
+  geom_vline(xintercept=6.19, linetype="dashed", color = "red") +
+  geom_hline(yintercept=0, linetype="dashed", color = "red") +
+  ggtitle("Neogenin expression vs EMT-score (28 échantillons)") +
+  geom_text_repel(hjust="top", vjust="top") +
+  geom_point() 
+```
+
+
+## Courbes de survie pour les 7 individus qui ont le plus haut score d'EMT (k-means) (erreur dans la figure ...)
+
+```{r Kaplan-Meier plots 7 highest EMT score}
+basic_coldata_pre_highemt <- basic_coldata_pre[which(basic_coldata_pre$EMT_s_level == "High"),]
+# 
+# km_fit_os <- survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre_highemt)
+# survminer::ggsurvplot(
+#   km_fit_os, 
+#   data = basic_coldata_pre_highemt,          # again specify the data used to fit linelistsurv_fit_sex 
+#   conf.int = TRUE,              # do not show confidence interval of KM estimates
+#   surv.scale = "percent",        # present probabilities in the y axis in %
+#   break.time.by = 50,            # present the time axis with an increment of 10 days
+#   xlab = "Follow-up days",
+#   ylab = "Survival Probability",
+#   pval = T,                      # print p-value of Log-rank test 
+#   pval.coord = c(40,.21),        # print p-value at these plot coordinates
+#   risk.table = T,                # print the risk table at bottom 
+#   legend.title = "Neogenin level",       # legend characteristics
+#   legend.labs = c("High","Low"),
+#   font.legend = 10, 
+#   palette = "Dark2",             # specify color palette 
+#   surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+#   ggtheme = theme_light()        # simplify plot background
+# )
+# 
+# km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre_highemt)
+# survminer::ggsurvplot(
+#   km_fit_pfs, 
+#   data = basic_coldata_pre_highemt,          # again specify the data used to fit linelistsurv_fit_sex 
+#   conf.int = TRUE,              # do not show confidence interval of KM estimates
+#   surv.scale = "percent",        # present probabilities in the y axis in %
+#   break.time.by = 50,            # present the time axis with an increment of 10 days
+#   xlab = "Follow-up days",
+#   ylab = "Non-Progression Probability",
+#   pval = T,                      # print p-value of Log-rank test 
+#   pval.coord = c(40,.21),        # print p-value at these plot coordinates
+#   risk.table = T,                # print the risk table at bottom 
+#   legend.title = "Neogenin level",       # legend characteristics
+#   legend.labs = c("High","Low"),
+#   font.legend = 10, 
+#   palette = "Dark2",             # specify color palette 
+#   surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+#   ggtheme = theme_light()        # simplify plot background
+# )
+
+# as.matrix(basic_coldata_pre) %>%
+# DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+# DT::formatStyle(columns = colnames(basic_coldata_pre),fontSize = '80%')
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon niveau de Neogenin : High
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[1]]`, Low `r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[2]]`.
+
+Médianes PFS selon niveau de Neogenin : High
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[2]]`
+
+
+## Courbes de survie pour les 11 individus qui ont le plus haut score d'EMT (médiane)
+
+Pour conserver 11 échantillons au lieu de seulement 7, on coupe l'EMT high à la médiane : `r median(basic_coldata_pre$Hallmark_score)`
+
+```{r Kaplan-Meier plots 11 highest EMT score}
+basic_coldata_pre_highemt <- basic_coldata_pre[which(basic_coldata_pre$Hallmark_score >= median(basic_coldata_pre$Hallmark_score)),]
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre_highemt)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_pre_highemt,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre_highemt)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_pre_highemt,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "Neogenin level",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon niveau de Neogenin : High
+`r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[1]]`, Low `r median(survfit(Surv(OS, Death_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[2]]`.
+
+Médianes PFS selon niveau de Neogenin : High
+`r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ NEO1_level, data=basic_coldata_pre_highemt))[[2]]`
+
+
+## Recherche explication différences TPM et DESeq2_normalised NEO1
+
+Plots de la différence entre l'expression en log2 de Neogenin avec la méthode TPM et avec DESeq2. Les lignes rouges représentent le seuil que l'on avait fixé pour déterminer Neogenin High/Low (2.75 pour les TPM, 6.19 pour DESeq2).
+
+```{r difference TPM DESeq2_normalised}
+expression_genes_tpm <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% c('NTN1', 'NEO1', 'UNC5B')),]
+t_expression_genes_tpm <- data.frame(t(expression_genes_tpm))
+basic_coldata$NEO1_tpm <- t_expression_genes_tpm$NEO1
+basic_coldata$NEO1_tpm_log <- log2(t_expression_genes_tpm$NEO1 + 1)
+
+basic_coldata_test <- basic_coldata[which(basic_coldata$Time == 'pre' & basic_coldata$SampleID != '06-006'),]
+
+number_reads <- read.csv('/home/eugenie-modolo/Documents/Lapnet/results_rnaseq_NFcore/fastqc_raw_sequence_counts_plot.tsv', sep="\t")
+number_reads$Sample2 <- substr(number_reads$Sample, 1, nchar(number_reads$Sample) - 2)
+number_reads$Means.Unique <- lapply(number_reads$Sample2, function(elem) mean(number_reads[which(number_reads$Sample2 == elem),"Unique.Reads"]))
+number_reads$Means.Duplicate <- lapply(number_reads$Sample2, function(elem) mean(number_reads[which(number_reads$Sample2 == elem),"Duplicate.Reads"]))
+unique_means <- number_reads %>% distinct(Sample2, Means.Unique)
+unique_means$Means.Unique <- as.numeric(unique_means$Means.Unique)
+lookup_means <- setNames(unique_means$Means.Unique, unique_means$Sample2)
+basic_coldata_test$Means.Unique <- lookup_means[rownames(basic_coldata_test)]
+
+# plot(basic_coldata_test$NEO1, basic_coldata_test$NEO1_tpm)
+# plot(basic_coldata_test$NEO1_log, basic_coldata_test$NEO1_tpm_log, col=basic_coldata_test$Means.Unique)
+# abline(v = 6.19, lty=3)
+# abline(h = 2.75, lty=3)
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc_meansunique <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(basic_coldata_test$Means.Unique), max(basic_coldata_test$Means.Unique)))
+sc_OS <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(basic_coldata_test$OS), max(basic_coldata_test$OS)))
+
+ggplot(basic_coldata_test, aes(x=NEO1_log, y=NEO1_tpm_log, col=Means.Unique, label=rownames(basic_coldata_test))) +
+  geom_hline(yintercept=2.75, linetype="dashed", color = "red") +
+  geom_vline(xintercept=6.19, linetype="dashed", color = "red") +
+  ggtitle("Neogenin expression TPM vs DESeq2 and Nb of unique reads") +
+  geom_text_repel(hjust="top", vjust="top") +
+  sc_meansunique +
+  geom_point() 
+
+ggplot(basic_coldata_test, aes(x=NEO1_log, y=NEO1_tpm_log, col=OS, label=rownames(basic_coldata_test))) +
+  geom_hline(yintercept=2.75, linetype="dashed", color = "red") +
+  geom_vline(xintercept=6.19, linetype="dashed", color = "red") +
+  ggtitle("Neogenin expression TPM vs DESeq2 and OS") +
+  geom_text_repel(hjust="top", vjust="top") +
+  sc_OS +
+  geom_point()
+```
+
+Résultats de l'EMT score en utilisant DESeq2 au lieu de TPM (non recommandé par la littérature) :
+
+```{r score EMT ssGSEA DESeq2}
+# on ne garde que les 22 échantillons d'intérêt pour lancer ssGSEA
+count_matrix_pre_desq <- as.matrix(norm.count_genesymbol[,c("01-001_pre","01-003_pre","01-004_pre",
+                        "01-006_pre","01-007_pre","01-011_pre","01-012_pre","02-001_pre","02-002_pre","02-003_pre",
+                        "02-006_pre","02-010_pre","02-014_pre","03-002_pre","03-003_pre","03-006_pre","06-001_pre",
+                        "06-007_pre","06-008_pre","06-009_pre","08-001_pre","08-002_pre")])
+
+# ssGSEA
+gsvaparams <- gsvaParam(count_matrix_pre_desq,
+                        list_genes_ssgsea)
+result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+scores_EMT <- result_gsva[1,]
+basic_coldata_test$Hallmark_score <- scores_EMT
+
+# plot
+hist(basic_coldata_test$Hallmark_score)
+```
+
+On coupe les valeurs à un score de 0 (confirmé par k-means). Cela donne les survival plots suivants :
+
+```{r Kaplan-Meier plots EMT score DESeq2 Hallmark}
+basic_coldata_test$EMT_s_level <- case_when(
+  basic_coldata_test$Hallmark_score >= 0 ~ "High",
+  basic_coldata_test$Hallmark_score < 0 ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ EMT_s_level, data=basic_coldata_test)
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = basic_coldata_test,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Survival Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=basic_coldata_test)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = basic_coldata_test,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 50,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up days",
+  ylab = "Non-Progression Probability",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark",       # legend characteristics
+  legend.labs = c("High","Low"),
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+```
+
+On obtient les médianes suivantes :
+
+Médianes OS selon Score EMT : High
+`r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=basic_coldata_test))[[1]]`, Low `r median(survfit(Surv(OS, Death_status) ~ EMT_s_level, data=basic_coldata_test))[[2]]` (NA car on a moins de 50% de décès).
+
+Médianes PFS selon Score EMT : High
+`r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=basic_coldata_test))[[1]]`, Low `r median(survfit(Surv(PFS, Prog_status) ~ EMT_s_level, data=basic_coldata_test))[[2]]`
+
+Etude du heatmap selon les 200 gènes Hallmark :
+
+```{r score EMT DESeq2 Heatmap}
+
+distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+
+expression_genes_200 <- count_matrix_pre_desq[which(row.names(count_matrix_pre_desq) %in% list_genes_Hallmark),]
+heatmap.2(as.matrix(log2(expression_genes_200+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+target <- c("02-006_pre", "06-009_pre", "06-008_pre", "02-003_pre", "08-002_pre", "06-001_pre", 
+            "01-006_pre", "01-007_pre", "01-004_pre", "03-003_pre", "02-001_pre", "02-010_pre", 
+            "01-001_pre", "02-014_pre", "01-003_pre", "08-001_pre", "01-011_pre", "03-002_pre", 
+            "06-007_pre", "03-006_pre", "02-002_pre", "01-012_pre")
+basic_coldata_test$row.names <- rownames(basic_coldata_test)
+basic_coldata_test %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=Hallmark_score)) +
+  geom_point() +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+```
+
+## Etude des 4 duo pre/post
+
+Comparaison EMT score pour les 4 duo pre-post :
+
+```{r score EMT DESeq2 pre-post ssGSEA}
+# on ne garde que les 8 échantillons d'intérêt 
+target <- c("01-007_pre","01-007_post","02-001_pre","02-001_post","02-003_pre",
+            "02-003_post","02-014_pre","02-014_post")
+basic_coldata_prepost <- basic_coldata[which(rownames(basic_coldata) %in% target),]
+count_matrix_prepost <- as.matrix(norm.count_genesymbol[,target])
+
+# ssGSEA Hallmark
+gsvaparams <- gsvaParam(count_matrix_prepost,
+                        list_genes_ssgsea)
+result_gsva <- gsva(gsvaparams)#, verbose = TRUE)
+scores_EMT <- result_gsva[1,]
+basic_coldata_prepost$Hallmark_score <- scores_EMT
+
+# Mak score
+expression_genes_M <- log2(norm.count_genesymbol[which(row.names(norm.count_genesymbol) %in% list_genes_M),]+1)
+expression_genes_E <- log2(norm.count_genesymbol[which(row.names(norm.count_genesymbol) %in% list_genes_E),]+1)
+# data.frame(t(expression_genes_M))
+basic_coldata_prepost$Mak_score <- NA
+basic_coldata_prepost$E_score <- NA
+for (sample in rownames(basic_coldata_prepost)) {
+  basic_coldata_prepost[sample, 'Mak_score'] <- mean(expression_genes_M[,sample]) - mean(expression_genes_E[,sample])
+  basic_coldata_prepost[sample, 'E_score'] <- mean(expression_genes_E[,sample])
+}
+
+# plot
+hist(basic_coldata_prepost$Hallmark_score)
+hist(basic_coldata_prepost$Mak_score)
+```
+
+EMT score selon pre/post :
+
+```{r score EMT DESeq2 pre-post comparaison}
+basic_coldata_prepost$row.names <- rownames(basic_coldata_prepost)
+ggplot(basic_coldata_prepost, aes(x=row.names, y=Hallmark_score, col=Time)) +
+  geom_point() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+basic_coldata_prepost$row.names <- rownames(basic_coldata_prepost)
+ggplot(basic_coldata_prepost, aes(x=row.names, y=Mak_score, col=Time)) +
+  geom_point() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+```
+
+Etude du heatmap selon les 200 gènes Hallmark : 
+
+```{r score EMT Heatmap LapNet}
+
+expression_genes_200_lapnet <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_Hallmark),]
+hm <- heatmap.2(as.matrix(log2(expression_genes_200_lapnet+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+target <- colnames(expression_genes_200_lapnet)[hm$colInd]
+basic_coldata_prepost$row.names <- rownames(basic_coldata_prepost)
+basic_coldata_prepost %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=Hallmark_score)) +
+  geom_point() +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+```
+
+Etude du heatmap selon les 77 gènes Mak :
+
+```{r score Mak Heatmap}
+
+expression_genes_77_lapnet <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_Mak),]
+hm <- heatmap.2(as.matrix(log2(expression_genes_77_lapnet+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+
+target <- colnames(expression_genes_77_lapnet)[hm$colInd]
+basic_coldata_prepost$row.names <- rownames(basic_coldata_prepost)
+basic_coldata_prepost %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=Mak_score)) +
+  geom_point() +
+  theme_bw()+ 
+  theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+```
+
+
+## Purity score (estimate)
+
+```{r purity scores}
+
+# write.table(norm.count_genesymbol_K,"./norm.count_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
+
+# Purity scores (package estimate)
+estimate::filterCommonGenes(input.f = "./norm.count_genesymbol_K.tsv", output.f = "norm.count_genesymbol_K.gct", id="GeneSymbol")
+estimate::estimateScore("norm.count_genesymbol_K.gct", "OV_estimate_score_LapNet.gct", platform = "illumina")
+# estimate::plotPurity(scores="OV_estimate_score.gct", samples="all_samples", platform="illumina") # ne fonctionne pas, on fait les plot autrement :
+
+# Plotting Estimate scores
+read_estimate_scores <- function(gct_file) {
+  
+  # Read GCT file (skip first 2 lines which are headers)
+  gct_data <- read.delim(gct_file, skip = 2, header = TRUE, row.names = 1)
+  
+  # The scores are typically in rows: StromalScore, ImmuneScore, ESTIMATEScore
+  # Transpose to get samples as rows
+  scores_df <- as.data.frame(t(gct_data[,which(colnames(gct_data) != "Description")]))
+  
+  # Clean up column names if needed
+  colnames(scores_df) <- gsub("\\.", "", colnames(scores_df))
+  
+  return(scores_df)
+}
+
+estimate_scores <- read_estimate_scores("OV_estimate_score_LapNet.gct")
+
+# Calculate tumor purity using the formula from the ESTIMATE paper: Purity = cos(0.6049872018 + 0.0001467884 * ESTIMATE score)
+calculate_tumor_purity <- function(estimate_scores) {
+  
+  # Extract ESTIMATE score column
+  if ("ESTIMATEScore" %in% colnames(estimate_scores)) {
+    estimate_score <- as.numeric(estimate_scores$ESTIMATEScore)
+  } else if ("ESTIMATE.score" %in% colnames(estimate_scores)) {
+    estimate_score <- as.numeric(estimate_scores$ESTIMATE.score)
+  } else {
+    # Find column with "ESTIMATE" in name
+    estimate_col <- grep("ESTIMATE", colnames(estimate_scores), ignore.case = TRUE, value = TRUE)[1]
+    estimate_score <- as.numeric(estimate_scores[[estimate_col]])
+  }
+  
+  # Calculate purity
+  purity <- cos(0.6049872018 + 0.0001467884 * estimate_score)
+  
+  # Add to dataframe
+  estimate_scores$TumorPurity <- purity
+  
+  return(estimate_scores)
+}
+
+# Calculate purity
+estimate_scores <- calculate_tumor_purity(estimate_scores)
+estimate_scores <- estimate_scores %>%
+    rownames_to_column("Sample")
+# vérif que les samples sont dans le même ordre
+# sum(estimate_scores$Sample == rownames(coldata)) == length(estimate_scores$Sample)
+estimate_scores$Time <- basic_coldata$Time
+
+# Histogram of purity obtained per sample
+ggplot(estimate_scores, aes(x = reorder(Sample, TumorPurity), y = TumorPurity, fill = Time)) +
+    # geom_bar(stat = "identity") +
+    geom_col() +
+    labs(title = "Estimated Tumor Purity by Sample",
+         x = "Sample",
+         y = "Tumor Purity") +
+    ylim(0, 1) +
+    # theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Upper and lower bounds for 95% PI (approximate from paper)
+estimate_scores$Upper95 <- pmin(estimate_scores$TumorPurity + 0.1, 1)
+estimate_scores$Lower95 <- pmax(estimate_scores$TumorPurity - 0.1, 0)
+
+# Create the plot
+p <- ggplot() +
+  # 95% prediction interval (grey shaded area)
+  geom_ribbon(data = estimate_scores,
+              aes(x = ESTIMATEScore, ymin = Lower95, ymax = Upper95),
+              fill = "grey80", alpha = 0.5) +
+  
+  # Prediction line (solid black)
+  geom_line(data = estimate_scores,
+            aes(x = ESTIMATEScore, y = TumorPurity),
+            color = "black", size = 1) +
+  
+  # Upper 95% PI dashed line
+  geom_line(data = estimate_scores,
+            aes(x = ESTIMATEScore, y = Upper95),
+            color = "grey50", linetype = "dashed", size = 0.8) +
+  
+  # Lower 95% PI dashed line
+  geom_line(data = estimate_scores,
+            aes(x = ESTIMATEScore, y = Lower95),
+            color = "grey50", linetype = "dashed", size = 0.8) +
+  
+  # Sample points (blue circles)
+  geom_point(data = estimate_scores,
+             aes(x = ESTIMATEScore, y = TumorPurity, label=Sample),
+             color = "blue", size = 2.5, alpha = 0.7) +
+             # geom_text(aes(label=Sample), hjust=0, vjust=0, check_overlap = TRUE, colour = "blue") +
+             # geom_text_repel(hjust="top", vjust="top") +
+             
+  # Labels and theme
+  labs(title = "Tumor Purity vs ESTIMATE Score",
+       x = "ESTIMATE Score",
+       y = "Tumor Purity") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    panel.grid.major = element_line(color = "grey90", size = 0.3)
+  )
+
+print(p)
+
+```
+
