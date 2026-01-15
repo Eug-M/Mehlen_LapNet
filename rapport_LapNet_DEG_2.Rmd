@@ -21,7 +21,7 @@ editor_options:
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Lapnet/"
-setwd(path)
+knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)

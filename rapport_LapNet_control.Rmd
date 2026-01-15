@@ -48,7 +48,7 @@ counts_genes_lapnet <- read.table("/home/eugenie-modolo/Documents/Lapnet/results
                      sep = "\t",
                      check.names = FALSE)
 
-# on modifie la matrix count_genes pour les 3 gènes qui sont en doublons pour les 200 gènes d'intérêt
+# on modifie la matrix count_genes pour les 3 gènes qui sont en doublons pour les 200 gènes d'intérêt Hallmark
 counts_genes_lapnet[which(row.names(counts_genes_lapnet)=='ENSG00000291748.1'),'gene_name'] <- 'COL3A1_2' 
 counts_genes_lapnet[which(row.names(counts_genes_lapnet)=='ENSG00000276886.4'),'gene_name'] <- 'GREM1_2' 
 counts_genes_lapnet[which(row.names(counts_genes_lapnet)=='ENSG00000282049.1'),'gene_name'] <- 'PRSS2_2'
