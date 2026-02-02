@@ -61,6 +61,9 @@ td { white-space: nowrap; }
 </style>
 
 ```{r librairies and functions, results = "hide", include=F}
+
+# /!\ aller voir : https://ngs101.com/how-to-analyze-rnaseq-data-for-absolute-beginners-part-5-from-degs-to-pathways-best-practices/
+
 # BiocManager::install("mixOmics")
 library("DESeq2")
 library("rtracklayer")
