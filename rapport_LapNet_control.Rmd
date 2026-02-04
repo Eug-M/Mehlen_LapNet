@@ -72,7 +72,7 @@ coldata_lapnet <- data.frame(coldata_lapnet, row.names = count_columns)
 dds_lapnet <- DESeqDataSetFromMatrix(
   countData = count_matrix_lapnet,
   colData = coldata_lapnet,
-  design = ~ Sex
+  design = ~ 1
 )
 dds_lapnet <- DESeq(dds_lapnet)
 norm.count_lapnet <- as.data.frame(counts(dds_lapnet, normalized=TRUE))
@@ -152,7 +152,7 @@ rownames(count_matrix_control) <- counts_genes_control$feature
 dds_control <- DESeqDataSetFromMatrix(
   countData = count_matrix_control,
   colData = coldata_control,
-  design = ~ sex
+  design = ~ 1
 )
 dds_control <- DESeq(dds_control)
 norm.count_control <- as.data.frame(counts(dds_control, normalized=TRUE))
