@@ -1009,8 +1009,8 @@ for (classif in c('collisson', 'moffitt', 'bailey')) {
 # basic_coldata$Hallmark_score <- scores_EMT
 
 ggplot(basic_coldata[which(basic_coldata$SampleID != "06-006"),], aes(x=NEO1_log, y=Hallmark_score_DESeq, col=Time, label=SampleID)) +
-  geom_vline(xintercept=6.19, linetype="dashed", color = "red") +
-  geom_hline(yintercept=0, linetype="dashed", color = "red") +
+  geom_vline(xintercept=median(basic_coldata$NEO1_log), linetype="dashed", color = "red") +
+  geom_hline(yintercept=median(basic_coldata$Hallmark_score_DESeq), linetype="dashed", color = "red") +
   ggtitle("Neogenin expression vs EMT-score (28 échantillons)") +
   geom_text_repel(hjust="top", vjust="top") +
   geom_point() 
@@ -1022,13 +1022,13 @@ ggplot(basic_coldata[which(basic_coldata$SampleID != "06-006"),], aes(x=NEO1_log
 
 ```{r purity scores}
 
-# write.table(norm.count_genesymbol_K,"./norm.count_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
+# write.table(norm.count_genesymbol_K,"./scripts/Mehlen_LapNet/norm.count_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
 # /!\ il faut modifier le fichier pour décaler les noms de samples et ajouter "GeneSymbol" comme nom de la première colonne
 
 # Purity scores (package estimate)
-estimate::filterCommonGenes(input.f = "./norm.count_genesymbol_K.tsv", output.f = "norm.count_genesymbol_K.gct", id="GeneSymbol")
-estimate::estimateScore("norm.count_genesymbol_K.gct", "OV_estimate_score_LapNet.gct", platform = "illumina")
-# estimate::plotPurity(scores="OV_estimate_score.gct", samples="all_samples", platform="illumina") # ne fonctionne pas, on fait les plot autrement :
+estimate::filterCommonGenes(input.f = "./scripts/Mehlen_LapNet/norm.count_genesymbol_K.tsv", output.f = "./scripts/Mehlen_LapNet/norm.count_genesymbol_K.gct", id="GeneSymbol")
+estimate::estimateScore("./scripts/Mehlen_LapNet/norm.count_genesymbol_K.gct", "./scripts/Mehlen_LapNet/OV_estimate_score_LapNet.gct", platform = "illumina")
+# estimate::plotPurity(scores="./scripts/Mehlen_LapNet/OV_estimate_score.gct", samples="all_samples", platform="illumina") # ne fonctionne pas, on fait les plot autrement :
 
 # Plotting Estimate scores
 read_estimate_scores <- function(gct_file) {
@@ -1046,7 +1046,7 @@ read_estimate_scores <- function(gct_file) {
   return(scores_df)
 }
 
-estimate_scores <- read_estimate_scores("OV_estimate_score_LapNet.gct")
+estimate_scores <- read_estimate_scores("./scripts/Mehlen_LapNet/OV_estimate_score_LapNet.gct")
 
 # Calculate tumor purity using the formula from the ESTIMATE paper: Purity = cos(0.6049872018 + 0.0001467884 * ESTIMATE score)
 calculate_tumor_purity <- function(estimate_scores) {
