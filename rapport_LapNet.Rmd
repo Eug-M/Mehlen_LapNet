@@ -1542,9 +1542,9 @@ estimate_scores$Time <- basic_coldata$Time
 ggplot(estimate_scores, aes(x = reorder(Sample, TumorPurity), y = TumorPurity, fill = Time)) +
     # geom_bar(stat = "identity") +
     geom_col() +
-    labs(title = "Estimated Tumor Purity by Sample",
+    labs(title = "Estimate Tumor Purity by Sample",
          x = "Sample",
-         y = "Tumor Purity") +
+         y = "Estimate Purity") +
     ylim(0, 1) +
     # theme_minimal() +
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
@@ -1596,6 +1596,60 @@ p <- ggplot() +
   )
 
 print(p)
+
+
+# PUREE score 
+
+# # creating the file for PUREE (genes as columns, Ensembl without .x)
+# counts_genes_puree <- t(counts_genes[, count_columns])
+# colnames(counts_genes_puree) <- sub("\\..*", "", rownames(counts_genes))
+# write.csv(counts_genes_puree, file = './scripts/PUREE/counts_Gynet_puree.csv')
+# # /!\ then run the python PUREE package using the commands in file ~/Documents/Gynet/scripts/Mehlen_Gynet_scripts/using_puree.ipynb
+
+# reading the scores
+puree_scores <- read.table("/home/eugenie-modolo/Documents/Gynet/scripts/PUREE/puree_result_Lapnet.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+puree_scores <- puree_scores %>%
+    rownames_to_column("Sample")
+# vérif que les samples sont dans le même ordre
+# sum(puree_scores$Sample == rownames(coldata)) == length(puree_scores$Sample)
+puree_scores$Time <- basic_coldata$Time
+
+ggplot(puree_scores, aes(x = reorder(Sample, purity), y = purity, fill = Time)) +
+    # geom_bar(stat = "identity") +
+    geom_col() +
+    labs(title = "PUREE Tumor Purity by Sample",
+         x = "Sample",
+         y = "PUREE Purity") +
+    ylim(0, 1) +
+    # theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+#  plot correlation Purity_Estimate & Purity_PUREE
+lmp <- function (modelobject) {
+    if (class(modelobject) != "lm") stop("Not an object of class 'lm' ")
+    f <- summary(modelobject)$fstatistic
+    p <- pf(f[1],f[2],f[3],lower.tail=F)
+    attributes(p) <- NULL
+    return(p)
+}
+lm_eqn <- function(df, y_col, x_col){
+    m <- lm(as.formula(paste(y_col, "~", x_col)), df);
+    eq <- substitute(italic(r)^2~"="~r2*","~~italic(p-value)~"="~pval, 
+         list(r2 = format(summary(m)$r.squared, digits = 2),
+              pval = format(lmp(m), digits=2)))
+    as.character(as.expression(eq));
+}
+
+ggplot(basic_coldata, aes(x=Purity_Estimate, y=Purity_PUREE)) +
+    geom_point() +
+    geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) +
+    geom_text(x = 0.5, y = 0.9, label = lm_eqn(basic_coldata, "Purity_PUREE", "Purity_Estimate"), parse = TRUE) +
+    labs(title = "ESTIMATE Score vs PUREE Score")
 
 ```
 
