@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
 ### Remarques
 # pour prendre en compte la time-series de taille de tumeur : attention, l'écart entre date de screen et C4 n'est pas constant

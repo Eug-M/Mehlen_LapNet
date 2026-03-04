@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 ---
 title: "Lapnet"
 author: "Eugénie Modolo"
@@ -1648,7 +1654,7 @@ lm_eqn <- function(df, y_col, x_col){
 ggplot(basic_coldata, aes(x=Purity_Estimate, y=Purity_PUREE)) +
     geom_point() +
     geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) +
-    geom_text(x = 0.5, y = 0.9, label = lm_eqn(basic_coldata, "Purity_PUREE", "Purity_Estimate"), parse = TRUE) +
+    geom_text(x = 0.75, y = 0.82, label = lm_eqn(basic_coldata, "Purity_PUREE", "Purity_Estimate"), parse = TRUE) +
     labs(title = "ESTIMATE Score vs PUREE Score")
 
 ```
