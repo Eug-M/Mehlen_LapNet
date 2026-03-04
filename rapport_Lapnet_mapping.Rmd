@@ -318,8 +318,8 @@ counts_genes_tpm <- read.table("/home/eugenie-modolo/Documents/Lapnet/results_rn
                                sep = "\t",
                                check.names = FALSE)
 # count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
-# besoin de prendre les integers pour DESeq2
-counts_genes_tpm[count_columns] <- round(counts_genes_tpm[count_columns])
+# # besoin de prendre les integers pour DESeq2
+# counts_genes_tpm[count_columns] <- round(counts_genes_tpm[count_columns])
 count_matrix_tpm <- as.matrix(counts_genes_tpm[, count_columns])
 count_matrix_tpm_genesymbol <- apply_gene_symbol_mapping(
   count_matrix_tpm, 
