@@ -249,7 +249,7 @@ gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
 keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
 keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
-count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- counts_genes[match(keep_genes, rownames(counts_genes)), ]
 
 count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
 # rownames(count_matrix) <- count_matrix_pcg$gene_name  # Gene names become row names
@@ -1160,7 +1160,7 @@ distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 for ( i in 1:5 ) {
   design_name <- paste0("design_", i)
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_22[[design_name]], rownames(counts_genes))]
-  matrix_heatmap_22 <- norm.count_list_22[[design_name]][which(rownames(norm.count_list_22[[design_name]]) %in% selected_genes_list_22[[design_name]]),]
+  matrix_heatmap_22 <- norm.count_list_22[[design_name]][match(selected_genes_list_22[[design_name]], rownames(norm.count_list_22[[design_name]])),]
   rownames(matrix_heatmap_22) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_22), rownames(counts_genes))], unique = T)
   heatmap.2(as.matrix(matrix_heatmap_22), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 }
@@ -1182,7 +1182,7 @@ column_ha = HeatmapAnnotation(
 for ( i in 1:5 ) {
   design_name <- paste0("design_", i)
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_22[[design_name]], rownames(counts_genes))]
-  matrix_heatmap_22 <- norm.count_list_22[[design_name]][which(rownames(norm.count_list_22[[design_name]]) %in% selected_genes_list_22[[design_name]]),]
+  matrix_heatmap_22 <- norm.count_list_22[[design_name]][match(selected_genes_list_22[[design_name]], rownames(norm.count_list_22[[design_name]])),]
   rownames(matrix_heatmap_22) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_22), rownames(counts_genes))], unique = T)
   # heatmap.2(as.matrix(matrix_heatmap_22), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
   draw(Heatmap(as.matrix(matrix_heatmap_22),
@@ -1316,7 +1316,7 @@ genes_symbol <- counts_genes$gene_name[match(genes_uniq, rownames(counts_genes))
 for ( i in 0:4 ) {
   design_name <- paste0("design_", i)
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_28[[design_name]], rownames(counts_genes))]
-  matrix_heatmap_28 <- norm.count_list_28[[design_name]][which(rownames(norm.count_list_28[[design_name]]) %in% selected_genes_list_28[[design_name]]),]
+  matrix_heatmap_28 <- norm.count_list_28[[design_name]][match(selected_genes_list_28[[design_name]], rownames(norm.count_list_28[[design_name]])),]
   rownames(matrix_heatmap_28) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_28), rownames(counts_genes))], unique = T)
   heatmap.2(as.matrix(matrix_heatmap_28), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 }
@@ -1793,7 +1793,7 @@ genes_symbol <- counts_genes$gene_name[match(genes_uniq, rownames(counts_genes))
 for ( i in 0:4 ) {
   design_name <- paste0("design_", i)
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_8[[design_name]], rownames(counts_genes))]
-  matrix_heatmap_8 <- norm.count_list_8[[design_name]][which(rownames(norm.count_list_8[[design_name]]) %in% selected_genes_list_8[[design_name]]),]
+  matrix_heatmap_8 <- norm.count_list_8[[design_name]][match(selected_genes_list_8[[design_name]], rownames(norm.count_list_8[[design_name]])),]
   rownames(matrix_heatmap_8) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_8), rownames(counts_genes))], unique = T)
   heatmap.2(as.matrix(matrix_heatmap_8), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 }
@@ -1801,7 +1801,7 @@ for ( i in 0:4 ) {
 # heatmap des DEGs_in_common (cf. rapport_LapNet_DEG_3)
 i = 1
 design_name <- paste0("design_", i)
-matrix_heatmap_8 <- norm.count_list_8[[design_name]][which(rownames(norm.count_list_8[[design_name]]) %in% DEGs_in_common),]
+matrix_heatmap_8 <- norm.count_list_8[[design_name]][match(DEGs_in_common, rownames(norm.count_list_8[[design_name]])),]
 rownames(matrix_heatmap_8) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_8), rownames(counts_genes))], unique = T)
 heatmap.2(as.matrix(matrix_heatmap_8), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 

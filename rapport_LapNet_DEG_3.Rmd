@@ -142,7 +142,7 @@ gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
 keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
 keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
-count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- counts_genes[match(keep_genes, rownames(counts_genes)), ]
 
 count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
 # rownames(count_matrix) <- count_matrix_pcg$gene_name  # Gene names become row names
@@ -354,7 +354,7 @@ plotMA(resLFC_28, ylim=c(-2,2), main=paste("plotMA 28", as.character(design_28)[
 
 
 DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_28, rownames(counts_genes))]
-table_28 <- data.frame(selected_genes_28, DEGs_gene_symbols, res_28[which(row.names(res_28) %in% selected_genes_28), "stat"], res_28[which(row.names(res_28) %in% selected_genes_28), "padj"], res_28[which(row.names(res_28) %in% selected_genes_28), "log2FoldChange"])
+table_28 <- data.frame(selected_genes_28, DEGs_gene_symbols, res_28[match(selected_genes_28, row.names(res_28)), "stat"], res_28[match(selected_genes_28, row.names(res_28)), "padj"], res_28[match(selected_genes_28, row.names(res_28)), "log2FoldChange"])
 colnames(table_28) <- c("ENSG", "gene_symbol", "stat", "padj", "log2FoldChange")
 table_28$ENSG_clean <- sub("\\..*", "", table_28$ENSG)
 table_28 <- table_28[order(table_28$log2FoldChange), ]
@@ -455,7 +455,7 @@ distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 for ( i in 0:3 ) { 
   design_name <- paste0("design_", i)
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))]
-  matrix_heatmap <- norm.count_list[[design_name]][which(rownames(norm.count_list[[design_name]]) %in% selected_genes_list[[design_name]]),]
+  matrix_heatmap <- norm.count_list[[design_name]][match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]])),]
   rownames(matrix_heatmap) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap), rownames(counts_genes))], unique = T)
   draw(Heatmap(as.matrix(matrix_heatmap),
                clustering_distance_columns  = "pearson",
@@ -532,12 +532,12 @@ dds <- DESeq(dds)
 norm_count_28 <- assay(vst(dds, blind=FALSE))
 res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
 
-matrix_heatmap_28 <- norm_count_28[which(rownames(norm_count_28) %in% DEGs_in_common_28),]
+matrix_heatmap_28 <- norm_count_28[match(DEGs_in_common_28, rownames(norm_count_28)),]
 rownames(matrix_heatmap_28) <- DEGs_gene_symbols
 # heatmap.2(as.matrix(matrix_heatmap_28), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 
 
-table_cv_28 <- data.frame(DEGs_in_common_28, DEGs_gene_symbols, res[which(row.names(res) %in% DEGs_in_common_28), "stat"], res[which(row.names(res) %in% DEGs_in_common_28), "padj"], res[which(row.names(res) %in% DEGs_in_common_28), "log2FoldChange"])
+table_cv_28 <- data.frame(DEGs_in_common_28, DEGs_gene_symbols, res[match(DEGs_in_common_28, row.names(res)), "stat"], res[match(DEGs_in_common_28, row.names(res)), "padj"], res[match(DEGs_in_common_28, row.names(res)), "log2FoldChange"])
 colnames(table_cv_28) <- c("ENSG", "gene_symbol", "stat", "padj", "log2FoldChange")
 table_cv_28$ENSG_clean <- sub("\\..*", "", table_cv_28$ENSG)
 table_cv_28 <- table_cv_28[order(table_cv_28$log2FoldChange), ]
@@ -588,7 +588,7 @@ with(subset(resLFCordered_28, padj <.05 & abs(log2FoldChange)>0.58), points(log2
 # heatmap Nico des DEGs par sample
 distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_28, rownames(counts_genes))]
-matrix_heatmap_28 <- norm_count_28[which(rownames(norm_count_28) %in% selected_genes_28),]
+matrix_heatmap_28 <- norm_count_28[match(selected_genes_28, rownames(norm_count_28)),]
 rownames(matrix_heatmap_28) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_28), rownames(counts_genes))], unique = T)
 heatmap.2(as.matrix(matrix_heatmap_28), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 
@@ -973,7 +973,7 @@ DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_8, rownames(cou
 
 # heatmap des DEGs par sample
 distcor <- function(m){ as.dist(1-cor(t(m))  ) }
-matrix_heatmap_8 <- norm.count_8[which(rownames(norm.count_8) %in% selected_genes_8),]
+matrix_heatmap_8 <- norm.count_8[match(selected_genes_8, rownames(norm.count_8)),]
 # matrix_heatmap_8$gene_symbol <- counts_genes$gene_name[match(rownames(matrix_heatmap_8), rownames(counts_genes))]
 # # correction pour le gène dupliqué (à automatiser !)
 # matrix_heatmap_8$gene_symbol[75] = "DDR1."

@@ -85,7 +85,7 @@ norm.count_lapnet <- as.data.frame(counts(dds_lapnet, normalized=TRUE))
 
 
 genes_of_interest <- c('NTN1', 'EPCAM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'VIM')
-expression_genes <- norm.count_lapnet[which(row.names(norm.count_lapnet) %in% genes_of_interest),]
+expression_genes <- norm.count_lapnet[match(genes_of_interest, row.names(norm.count_lapnet)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   coldata_lapnet[[gene]] <- t_expression_genes[[gene]]
@@ -164,7 +164,7 @@ dds_control <- DESeq(dds_control)
 norm.count_control <- as.data.frame(counts(dds_control, normalized=TRUE))
 
 genes_of_interest <- c('NTN1', 'EPCAM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'VIM')
-expression_genes <- norm.count_control[which(row.names(norm.count_control) %in% genes_of_interest),]
+expression_genes <- norm.count_control[match(genes_of_interest, row.names(norm.count_control)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   coldata_control[[gene]] <- t_expression_genes[[gene]]
@@ -1066,7 +1066,7 @@ Etude du heatmap selon les 200 gènes Hallmark : LapNet
 
 distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 
-expression_genes_200_lapnet <- norm.count_lapnet_K[which(row.names(norm.count_lapnet_K) %in% list_genes),]
+expression_genes_200_lapnet <- norm.count_lapnet_K[match(list_genes, row.names(norm.count_lapnet_K)),]
 hm <- heatmap.2(as.matrix(log2(expression_genes_200_lapnet+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 
 target <- colnames(expression_genes_200_lapnet)[hm$colInd]
@@ -1082,7 +1082,7 @@ Etude du heatmap selon les 200 gènes Hallmark : Control
 
 ```{r score EMT Heatmap Control}
 
-expression_genes_200_control <- norm.count_control_K[which(row.names(norm.count_control_K) %in% list_genes),]
+expression_genes_200_control <- norm.count_control_K[match(list_genes, row.names(norm.count_control_K)),]
 hm <- heatmap.2(as.matrix(log2(expression_genes_200_control+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 
 target <- colnames(expression_genes_200_control)[hm$colInd]

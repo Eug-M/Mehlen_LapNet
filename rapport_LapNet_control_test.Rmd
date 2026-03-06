@@ -82,7 +82,7 @@ dds_lapnet <- DESeq(dds_lapnet)
 norm.count_lapnet <- as.data.frame(counts(dds_lapnet, normalized=TRUE))
 
 genes_of_interest <- c('NTN1', 'EPCAM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'VIM')
-expression_genes <- norm.count_lapnet[which(row.names(norm.count_lapnet) %in% genes_of_interest),]
+expression_genes <- norm.count_lapnet[match(genes_of_interest, row.names(norm.count_lapnet)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   coldata_lapnet[[gene]] <- t_expression_genes[[gene]]
@@ -167,7 +167,7 @@ dds_control <- DESeqDataSetFromMatrix(
 dds_control <- DESeq(dds_control)
 norm.count_control <- as.data.frame(counts(dds_control, normalized=TRUE))
 
-expression_genes <- norm.count_control[which(row.names(norm.count_control) %in% genes_of_interest),]
+expression_genes <- norm.count_control[match(genes_of_interest, row.names(norm.count_control)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   coldata_control[[gene]] <- t_expression_genes[[gene]]
@@ -942,7 +942,7 @@ dds_folfi <- DESeqDataSetFromMatrix(
 dds_folfi <- DESeq(dds_folfi)
 norm.count_folfi <- as.data.frame(counts(dds_folfi, normalized=TRUE))
 
-expression_genes <- norm.count_folfi[which(row.names(norm.count_folfi) %in% genes_of_interest),]
+expression_genes <- norm.count_folfi[match(genes_of_interest, row.names(norm.count_folfi)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   coldata_folfi[[gene]] <- t_expression_genes[[gene]]

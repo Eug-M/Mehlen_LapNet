@@ -258,7 +258,7 @@ norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
 
 
 genes_of_interest <- c('NTN1', 'EPCAM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'VIM', 'TFF3')
-expression_genes <- norm.count_genesymbol[which(row.names(norm.count_genesymbol) %in% genes_of_interest),]
+expression_genes <- norm.count_genesymbol[match(genes_of_interest, row.names(norm.count_genesymbol)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   basic_coldata[[gene]] <- t_expression_genes[[gene]]
@@ -530,7 +530,7 @@ gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
 keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
 keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
-count_matrix_tpm_pcg <- as.matrix(counts_genes_tpm[which(rownames(counts_genes_tpm) %in% keep_genes), count_columns])
+count_matrix_tpm_pcg <- as.matrix(counts_genes_tpm[match(keep_genes, rownames(counts_genes_tpm)), count_columns])
 count_matrix_tpm_pcg_genesymbol <- apply_gene_symbol_mapping(
   count_matrix_tpm_pcg, 
   mapping_file = mapping
@@ -633,7 +633,7 @@ En prenant les 200 gènes EMT de Hallmark et avec les expressions normalisées p
   
 ```{r score EMT ssGSEA DESeq2 pcg}
 
-count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- counts_genes[match(keep_genes, rownames(counts_genes)), ]
 count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
 
 count_matrix_pcg_genesymbol <- apply_gene_symbol_mapping(
