@@ -273,7 +273,7 @@ ggplot(coldata_figures, aes(x = reorder(row.names, perc_0), y = perc_0, fill = T
      labs(title = "LapNet - % of 0 counts per Sample",
           x = "Sample",
           y = "Percentage of genes at 0 count") +
-     ylim(0, 1) +
+     # ylim(0, 1) +
      theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 # ggplot(coldata_figures, aes(x = reorder(row.names, nber_0), y = nber_0, fill = Time)) +

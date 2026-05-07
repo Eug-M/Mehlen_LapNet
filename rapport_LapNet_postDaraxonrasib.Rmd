@@ -1,0 +1,307 @@
+---
+title: "LapNet Daraxonrasib - étude de l'effet du Daraxonrasib sur l'EMT"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Lapnet/"
+# setwd(path)
+knitr::opts_knit$set(root.dir = path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies, results = "hide", include=F}
+
+library("RColorBrewer")
+library("dplyr")
+library("ggplot2")
+library(gridExtra)
+library("tidyverse")
+library("viridis")
+library('survival')
+library(ranger)
+library(ggfortify)
+library(survminer)
+library(KMEANS.KNN)
+library(factoextra)
+library(GSVA)
+library(gplots)
+library("DESeq2")
+library(ggrepel)
+library(AnnotationDbi) 
+library(org.Hs.eg.db)
+library(GenomicFeatures)
+library(parameters)
+library(txdbmaker)
+library("rtracklayer")
+library("ComplexHeatmap")
+library(circlize)
+library(conflicted)
+library(estimate)
+
+```
+
+# Objectif
+
+Etudier l'effet sur les cellules pancréatiques du traitement par le Daraxonrasib (aussi appelé RMC-6236, inhibiteur de KRAS) sur l'EMT, et notamment la Nétrine et ses récepteurs.
+
+* Concernant le jeu de données bulk RNA-Seq : On a pour chaque lignée 3 réplicats contrôles (traitées au DMSO), 3 traitées au RMC-6236, 3 au tazemetostat et 3 en combinant ces deux traitements.<br/> https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE315130 <br/>
+
+  + 2 lignées humaines : PSN1 (exhibiting epithelial-like morphology isolated from the pancreas of a patient with adenocarcinoma) & SW1990 (epithelial cells isolated from the spleen metastasis of a grade II pancreatic adenocarcinoma) ;
+  
+  + 2 expériences souris : (i) même chose que pour les lignées humaines (avec 4 réplicats pour chaque condition au lieu de 3), sur des tumeurs KPC (model of pancreatic ductal adenocarcinoma - PDA) orthotopiques ; (ii) modèle de résistance à RMC-6236, les tumeurs sont traitées pendant 22 jours au RMC-6236 puis trois différents traitements sont faits : contrôle, RMC-6236 en monothérapie ou en combinaison avec un inhibiteur à EZH2 (tazemetostat).
+
+* Concernant le jeu de données single-cell RNA-Seq : Tout est de la souris (KPPC).<br/> https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE303105 <br/>
+
+  + 1 scRNASeq d'une souris traitée avec RMC-6236 ;
+  
+  + 1 scRNASeq contrôle (souris traitée avec DMSO).
+
+
+
+# Jeu de données bulk RNA-Seq
+
+## Homme PSN1 & SW1990
+
+### Expression des gènes d'intérêt {.tabset}
+
+```{r Homme PSN1 & SW1990 genes d interet, results='asis', echo=FALSE}
+
+# PSN1
+FPKM_bulkH_PSN1 <- read.table("./donnees_KRAS/GSE315130_PSN1_cell_line_gene_sample_FPKM_with_symbol.txt", 
+                     header = TRUE, 
+                     sep = "\t",
+                     check.names = FALSE)
+# FPKM_bulkH_PSN1 <- subset( FPKM_bulkH_PSN1, select = -description ) # I removed this column directly from the files, as there were errors with the quotes during the file loading that removed lots of lines
+FPKM_bulkH_PSN1[, 3:14] <- sapply(FPKM_bulkH_PSN1[, 3:14], as.numeric)
+FPKM_bulkH_PSN1 <- subset( FPKM_bulkH_PSN1, select = -geneid)
+
+# SW1990
+FPKM_bulkH_SW1990 <- read.table("./donnees_KRAS/GSE315130_SW1990_cell_line_gene_sample_FPKM_with_symbol.txt", 
+                     header = TRUE, 
+                     sep = "\t",
+                     check.names = FALSE)
+# FPKM_bulkH_SW1990 <- subset( FPKM_bulkH_SW1990, select = -description )
+FPKM_bulkH_SW1990[, 3:14] <- sapply(FPKM_bulkH_SW1990[, 3:14], as.numeric)
+# checking that the lines are in the same order:
+checkH <- sum(FPKM_bulkH_PSN1$Symbol == FPKM_bulkH_SW1990$Symbol) == nrow(FPKM_bulkH_PSN1)
+FPKM_bulkH_SW1990 <- subset( FPKM_bulkH_SW1990, select = -c(geneid, Symbol))
+
+# creating the joined coldata for EDA figures
+FPKM_bulkH_joined <- cbind(FPKM_bulkH_PSN1, FPKM_bulkH_SW1990)
+
+if (checkH == TRUE) {
+  genes_of_interest_human <- c('NTN1', 'EPCAM', 'VIM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'TFF3') #, 'COMMD2', 'GRIN2D'
+  coldata_FPKM_bulkH <- data.frame(row.names=colnames(FPKM_bulkH_joined)[2:length(colnames(FPKM_bulkH_joined))])
+  coldata_FPKM_bulkH$cell_line <- c(rep("PSN1", 12), rep("SW1990", 12))
+  coldata_FPKM_bulkH$condition <- c(rep("Daraxonrasib", 3), rep("both", 3), rep("control", 3), rep("tazemetostat", 3), rep("Daraxonrasib", 3), rep("both", 3), rep("control", 3), rep("tazemetostat", 3))
+  
+  expression_genes <- FPKM_bulkH_joined[match(genes_of_interest_human, FPKM_bulkH_joined$Symbol),]
+  rownames(expression_genes) <- expression_genes$Symbol
+  expression_genes <- subset( expression_genes, select = -Symbol )
+  t_expression_genes <- data.frame(t(expression_genes))
+  for (gene in genes_of_interest_human) {
+    coldata_FPKM_bulkH[[gene]] <- t_expression_genes[[gene]]
+    # coldata_FPKM_bulkH[[paste0(gene, "_log")]] <- log2(t_expression_genes[[gene]] + 1)
+  }
+  
+  # draw coldata table
+  as.matrix(coldata_FPKM_bulkH) %>%
+  DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+  DT::formatStyle(columns = colnames(coldata_FPKM_bulkH),fontSize = '80%')
+  
+  # draw histograms for each gene of interest
+  create_gene_histograms <- function(gene_name, df) {
+  
+    cell_line_1 <- unique(df$cell_line)[1]
+    cell_line_2 <- unique(df$cell_line)[2]
+    
+    p1 <- ggplot(df[df$cell_line == cell_line_1,], aes(x = condition, y=.data[[gene_name]], fill=condition)) + 
+    geom_boxplot()+#notch = TRUE) +
+    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+    geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
+    theme_bw()+ 
+    ylim(0, NA) +
+    theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+    ggtitle(paste("FPKM", cell_line_1))
+    
+    p2 <- ggplot(df[df$cell_line == cell_line_2,], aes(x = condition, y=.data[[gene_name]], fill=condition)) + 
+    geom_boxplot()+#notch = TRUE) +
+    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+    geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
+    theme_bw()+ 
+    ylim(0, NA) +
+    theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+    ggtitle(paste("FPKM", cell_line_2)) 
+    
+    # grid.arrange(p1, p2, nrow = 1)
+    return(list(plot1 = p1, plot2 = p2))
+  }
+  
+  
+  for (gene in genes_of_interest_human) {
+    cat("#### ", gene, " \n\n")
+    res <- create_gene_histograms(gene, coldata_FPKM_bulkH)
+    print(grid.arrange(res$plot1, res$plot2, nrow = 1))
+    cat("\n\n")
+  }
+
+}
+
+```
+
+<br/>
+<br/>
+
+
+
+## Souris (KPC et lignée résistante à RMC-6236)
+
+### Expression des gènes d'intérêt {.tabset}
+
+```{r Souris KPC & resistante genes d interet, results='asis', echo=FALSE}
+
+FPKM_bulkM_KPC <- read.table("./donnees_KRAS/GSE315130_KPC_orthotopic_model_gene_sample_FPKM_with_symbol.txt", 
+                     header = TRUE, 
+                     sep = "\t",
+                     check.names = FALSE)
+FPKM_bulkM_KPC <- subset( FPKM_bulkM_KPC, select = -geneid)
+FPKM_bulkM_KPC[, 2:17] <- sapply(FPKM_bulkM_KPC[, 2:17], as.numeric)
+
+FPKM_bulkM_resist <- read.table("./donnees_KRAS/GSE315130_KPC_cell_line_gene_sample_FPKM_with_symbol.txt", 
+                     header = TRUE, 
+                     sep = "\t",
+                     check.names = FALSE)
+FPKM_bulkM_resist[, 3:14] <- sapply(FPKM_bulkM_resist[, 3:14], as.numeric)
+# checking that the lines are in the same order:
+checkM <- sum(FPKM_bulkM_KPC$Symbol == FPKM_bulkM_resist$Symbol) == nrow(FPKM_bulkM_KPC)
+FPKM_bulkM_resist <- subset( FPKM_bulkM_resist, select = -c(geneid, Symbol) )
+
+# creating the joined coldata for EDA figures
+FPKM_bulkM_joined <- cbind(FPKM_bulkM_KPC, FPKM_bulkM_resist)
+
+if (checkM == TRUE) {
+  genes_of_interest_mouse <- c('Ntn1', 'Epcam', 'Vim', 'Neo1', 'Unc5b', 'Dcc', 'Unc5a', 'Unc5c', 'Unc5d', 'Mcam', 'Adora2b', 'Dscam', 'App', 'Tff3')
+  coldata_FPKM_bulkM <- data.frame(row.names=colnames(FPKM_bulkM_joined)[2:length(colnames(FPKM_bulkM_joined))])
+  coldata_FPKM_bulkM$cell_line <- c(rep("KPC", 16), rep("resistant", 12))
+  coldata_FPKM_bulkM$condition <- c(rep("both", 4), rep("control", 4), rep("Daraxonrasib", 4), rep("tazemetostat", 4), rep("Daraxonrasib", 3), rep("Darax_EZH2inhib", 3), rep("control", 3), rep("tazemetostat", 3))
+  
+  expression_genes <- FPKM_bulkM_joined[match(genes_of_interest_mouse, FPKM_bulkM_joined$Symbol),]
+  rownames(expression_genes) <- expression_genes$Symbol
+  expression_genes <- subset( expression_genes, select = -Symbol )
+  t_expression_genes <- data.frame(t(expression_genes))
+  for (gene in genes_of_interest_mouse) {
+    coldata_FPKM_bulkM[[gene]] <- t_expression_genes[[gene]]
+  }
+  
+  # draw coldata table
+  as.matrix(coldata_FPKM_bulkM) %>%
+  DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+  DT::formatStyle(columns = colnames(coldata_FPKM_bulkM),fontSize = '80%')
+  
+  # draw histograms for each gene of interest
+  for (gene in genes_of_interest_mouse) {
+    cat("#### ", gene, " \n\n")
+    res <- create_gene_histograms(gene, coldata_FPKM_bulkM)
+    print(grid.arrange(res$plot1, res$plot2, nrow = 1))
+    cat("\n\n")
+  }
+
+}
+
+```
+
+<br/>
+<br/>
+
+
+
+
+# Conclusions 
+
+Concernant les données de bulk RNA-Seq :
+
+* le niveau de Netrine augmente bien avec le traitement au Daraxonrasib comparé au contrôle, sauf (très peu) lorsque la lignée y était déjà résistante. Dans ce dernier cas, l'ajout d'un inhibiteur EZH2 au Daraxonrasib fait un peu descendre le niveau de Netrine, contrairement à l'attendu.
+
+* chez l'Homme, EPCAM et VIM diminuent avec le traitement au Daraxonrasib, ce qui donne un signal non clair pour l'EMT. Pour remarque : 
+
+  + chez la souris non-résistante, on ne voit pas d'effet sur EPCAM et très peu sur VIM ; 
+  
+  + chez la souris résistante, EPCAM augmente et VIM diminue avec ce traitement (ce qui va dans le sens inverse d'une EMT). 
+
+* les récepteurs à la Netrine ont une réponse au traitement différente selon les lignées. 
+
+
+Il n'est malheureusement pas possible de calculer un score d'EMT avec les expressions en FPKM.
+
+
+L'étude des échantillons single-cell RNA-Seq est en cours.
+
+
+
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

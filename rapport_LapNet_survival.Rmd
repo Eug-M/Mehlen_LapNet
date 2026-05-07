@@ -1362,7 +1362,7 @@ create_classif_boxplots <- function(classif, classif_col, df1, df2) {
   p1 <- ggplot(df1, aes(x = .data[[classif_col]], y=Hallmark_score, fill=.data[[classif_col]])) + 
   geom_boxplot(notch = TRUE) +
   scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
   theme_bw()+ 
   theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
   ggtitle(paste("Hallmark", classif, "LapNet")) 
@@ -1370,7 +1370,7 @@ create_classif_boxplots <- function(classif, classif_col, df1, df2) {
   p2 <- ggplot(df2, aes(x = .data[[classif_col]], y=Hallmark_score, fill=.data[[classif_col]])) + 
   geom_boxplot(notch = TRUE) +
   scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
   theme_bw()+ 
   theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
   ggtitle(paste("Hallmark", classif, "Nicolle"))
@@ -1378,7 +1378,7 @@ create_classif_boxplots <- function(classif, classif_col, df1, df2) {
   p3 <- ggplot(df1, aes(x = .data[[classif_col]], y=Mak_score, fill=.data[[classif_col]])) + 
   geom_boxplot(notch = TRUE) +
   scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
   theme_bw()+ 
   theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
   ggtitle(paste("Mak", classif, "LapNet"))
@@ -1386,7 +1386,7 @@ create_classif_boxplots <- function(classif, classif_col, df1, df2) {
   p4 <- ggplot(df2, aes(x = .data[[classif_col]], y=Mak_score, fill=.data[[classif_col]])) + 
   geom_boxplot(notch = TRUE) +
   scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
   theme_bw()+ 
   theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
   ggtitle(paste("Mak", classif, "Nicolle"))
