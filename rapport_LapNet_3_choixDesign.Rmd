@@ -341,6 +341,10 @@ venn(pour_venn)
 coldata_restricted <- coldata_lapnet[rownames(coldata_lapnet) != "06-006_pre" & rownames(coldata_lapnet) != "07-003_post", ]
 count_matrix_restricted <- count_matrix_lapnet[, rownames(coldata_lapnet) != "06-006_pre" & rownames(coldata_lapnet) != "07-003_post"]
 
+coldata_pre <- coldata_restricted[which(coldata_restricted$Time == "pre"), ]
+coldata_pre <- subset( coldata_pre, select = -c(Time) ) # colonne qui ne prend qu'une valeur
+count_matrix_pre <- count_matrix_restricted[, which(coldata_restricted$Time == "pre")]
+
 ```
 
 Conclusion : de nombreux DEGs apparaissent spécifiquement lorsqu'au moins l'un de ces échantillons est présent, il semble donc préférable de les retirer de l'analyse.
@@ -946,8 +950,8 @@ test_variable_influence_lrt <- function(count_matrix,
 
 # Run sequential selection
 lrt_results <- test_variable_influence_lrt(
-  count_matrix = count_matrix_restricted,
-  coldata = coldata_restricted,
+  count_matrix = count_matrix_pre,
+  coldata = coldata_pre,
   variables = c("Death_status", "Prog_status", "Surg_status", "Best_response_2", "Size_norm_C4_cr", "best_lesion_perc_cr", "OS_cr", "PFS_cr", "tumor_spline_slope_cr"),  # or NULL for all
   padj_cutoff = padj.cutoff,
   lfc_cutoff = lfc.cutoff,
@@ -961,22 +965,22 @@ DT::formatStyle(columns = colnames(lrt_results$results),fontSize = '80%')
 
 ```
 
-La meilleure variable d'intérêt semble être tumor_spline_slope. En PLS, elle était également bien placée. 
-Elle est cependant éloignée des variables habituellement surveillées, on va donc également tester OS (qui est mieux placée que PFS).
+La meilleure variable d'intérêt semble être Prog_status En PLS, elle était également bien placée. 
+On pourra également tester OS, en tant que variable quantitative.
 
 ## Choix du reste du design
 
-### Avec tumor_spline_slope
+### Avec Prog_status
 
-```{r forward selection strategy LRT with duplicates pre tumor_spline_slope}
+```{r forward selection strategy LRT with duplicates pre Prog_status}
 
-# with tumor_spline_slope_cr
+# with Prog_status
 sequential_results <- test_variable_influence_lrt_sequential_duplicates_withVarInt(
-  count_matrix = count_matrix_restricted,
-  coldata = coldata_restricted,
+  count_matrix = count_matrix_pre,
+  coldata = coldata_pre,
   duplicates = duplicates,
-  variables = c("Time", "Sex", "Death_status", "Prog_status", "Surg_status", "Classif_collisson", "Classif_moffitt", "Classif_bailey", "Best_response_2", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "Size_norm_C4_cr", "best_lesion_perc_cr", "OS_cr", "PFS_cr", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr", "Purity_Estimate_cr", "Purity_PUREE_cr"),  # or NULL for all
-  var_interest = 'tumor_spline_slope_cr',
+  variables = c("Sex", "Death_status", "Surg_status", "Classif_collisson", "Classif_moffitt", "Classif_bailey", "Best_response_2", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "Size_norm_C4_cr", "best_lesion_perc_cr", "OS_cr", "PFS_cr", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr", "Purity_Estimate_cr", "Purity_PUREE_cr", "tumor_spline_slope_cr"),  # or NULL for all
+  var_interest = 'Prog_status',
   padj_cutoff = padj.cutoff,
   lfc_cutoff = lfc.cutoff
 )
@@ -989,10 +993,10 @@ plot_sequential_selection_heatmap(sequential_results, criterion = "padj_and_lfc"
 ```{r forward selection strategy LRT with duplicates pre OS}
 
 sequential_results <- test_variable_influence_lrt_sequential_duplicates_withVarInt(
-  count_matrix = count_matrix_restricted,
-  coldata = coldata_restricted,
+  count_matrix = count_matrix_pre,
+  coldata = coldata_pre,
   duplicates = duplicates,
-  variables = c("Time", "Sex", "Death_status", "Prog_status", "Surg_status", "Classif_collisson", "Classif_moffitt", "Classif_bailey", "Best_response_2", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "Size_norm_C4_cr", "best_lesion_perc_cr", "PFS_cr", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr", "Purity_Estimate_cr", "Purity_PUREE_cr", "tumor_spline_slope_cr"),  # or NULL for all
+  variables = c("Sex", "Death_status", "Prog_status", "Surg_status", "Classif_collisson", "Classif_moffitt", "Classif_bailey", "Best_response_2", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "Size_norm_C4_cr", "best_lesion_perc_cr", "PFS_cr", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr", "Purity_Estimate_cr", "Purity_PUREE_cr", "tumor_spline_slope_cr"),  # or NULL for all
   var_interest = 'OS_cr',
   padj_cutoff = padj.cutoff,
   lfc_cutoff = lfc.cutoff

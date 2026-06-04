@@ -148,6 +148,34 @@ FPKM_bulkH_SW1990 <- subset( FPKM_bulkH_SW1990, select = -c(geneid, Symbol))
 # creating the joined coldata for EDA figures
 FPKM_bulkH_joined <- cbind(FPKM_bulkH_PSN1, FPKM_bulkH_SW1990)
 
+# function to draw histograms for each gene of interest
+create_gene_histograms <- function(gene_name, df) {
+
+  cell_line_1 <- unique(df$cell_line)[1]
+  cell_line_2 <- unique(df$cell_line)[2]
+  
+  p1 <- ggplot(df[df$cell_line == cell_line_1,], aes(x = condition, y=.data[[gene_name]], fill=condition)) + 
+  geom_boxplot()+#notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
+  theme_bw()+ 
+  ylim(0, NA) +
+  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste("FPKM", cell_line_1))
+  
+  p2 <- ggplot(df[df$cell_line == cell_line_2,], aes(x = condition, y=.data[[gene_name]], fill=condition)) + 
+  geom_boxplot()+#notch = TRUE) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
+  theme_bw()+ 
+  ylim(0, NA) +
+  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste("FPKM", cell_line_2)) 
+  
+  # grid.arrange(p1, p2, nrow = 1)
+  return(list(plot1 = p1, plot2 = p2))
+}
+
 if (checkH == TRUE) {
   genes_of_interest_human <- c('NTN1', 'EPCAM', 'VIM', 'NEO1', 'UNC5B', 'DCC', 'UNC5A', 'UNC5C', 'UNC5D', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'TFF3') #, 'COMMD2', 'GRIN2D'
   coldata_FPKM_bulkH <- data.frame(row.names=colnames(FPKM_bulkH_joined)[2:length(colnames(FPKM_bulkH_joined))])
@@ -167,35 +195,6 @@ if (checkH == TRUE) {
   as.matrix(coldata_FPKM_bulkH) %>%
   DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
   DT::formatStyle(columns = colnames(coldata_FPKM_bulkH),fontSize = '80%')
-  
-  # draw histograms for each gene of interest
-  create_gene_histograms <- function(gene_name, df) {
-  
-    cell_line_1 <- unique(df$cell_line)[1]
-    cell_line_2 <- unique(df$cell_line)[2]
-    
-    p1 <- ggplot(df[df$cell_line == cell_line_1,], aes(x = condition, y=.data[[gene_name]], fill=condition)) + 
-    geom_boxplot()+#notch = TRUE) +
-    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-    geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
-    theme_bw()+ 
-    ylim(0, NA) +
-    theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
-    ggtitle(paste("FPKM", cell_line_1))
-    
-    p2 <- ggplot(df[df$cell_line == cell_line_2,], aes(x = condition, y=.data[[gene_name]], fill=condition)) + 
-    geom_boxplot()+#notch = TRUE) +
-    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-    geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
-    theme_bw()+ 
-    ylim(0, NA) +
-    theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
-    ggtitle(paste("FPKM", cell_line_2)) 
-    
-    # grid.arrange(p1, p2, nrow = 1)
-    return(list(plot1 = p1, plot2 = p2))
-  }
-  
   
   for (gene in genes_of_interest_human) {
     cat("#### ", gene, " \n\n")

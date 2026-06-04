@@ -125,7 +125,10 @@ coldata$Best_response_2 <- case_when(
 coldata$Type <- case_when(
   startsWith(coldata$SampleID, "Ctrl") == TRUE ~ "control",
   startsWith(coldata$SampleID, "Ctrl") == FALSE ~ "lapnet")
+
+
 coldata <- subset( coldata, select = - c(Size_lesion_C0, Size_lesion_C4, Size_lesion_C8, Size_lesion_C12, Days_lesion_C0, Days_lesion_C4, Days_lesion_C8, Days_lesion_C12, Best_response))
+
 
 # scale and center the numeric columns
 numeric_columns <- c('Age', 'Height', 'Weight', 'BMI', 'best_lesion_perc', 'OS', 'PFS', 'Surgery', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned', 'Purity_Estimate', 'Purity_PUREE')
@@ -176,6 +179,9 @@ coldata_lapnet <- coldata_restricted[which(coldata_restricted$Type == "lapnet"),
 coldata_lapnet <- subset( coldata_lapnet, select = -c(Type) ) # colonne qui ne prend qu'une valeur
 count_matrix_lapnet <- count_matrix_restricted[, which(coldata_restricted$Type == "lapnet")]
 
+coldata_pre <- coldata_lapnet[which(coldata_lapnet$Time == "pre"), ]
+coldata_pre <- subset( coldata_pre, select = -c(Time) ) # colonne qui ne prend qu'une valeur
+count_matrix_pre <- count_matrix_lapnet[, which(coldata_lapnet$Time == "pre")]
 
 # Set thresholds
 padj.cutoff <- 0.05
@@ -191,13 +197,15 @@ Checkpoints: <br/>
 
 # DEGs pre vs post
 
-## Choix du design (sans les contrôles) {.tabset}
+## Recherche de DEGs
+
+### Choix du design (sans les contrôles) {.tabset}
 
 Design 1 : ~ Time <br/>
 Design 2 : ~ Classif_bailey + Time <br/>
 Design 3 : ~ Purity_Estimate_cr + Classif_bailey + Time <br/>
 
-```{r DEGs 3 designs both, results='asis', echo=FALSE}
+```{r DEGs 3 designs pre post, results='asis', echo=FALSE}
 
 design_1 <- as.formula("~ Time")
 design_2 <- as.formula("~ Classif_bailey + Time")
@@ -219,7 +227,7 @@ for (i in 1:3) {
     colData = coldata_lapnet,
     design = designs[[design_name]]
   )
-  
+  dds$Time <- relevel(dds$Time, ref = "pre")
   dds <- DESeq(dds)
   norm.count <- assay(vst(dds, blind=FALSE))
   norm.count_list[[design_name]] <- norm.count
@@ -250,7 +258,7 @@ distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 for ( i in 1:3 ) {
   cat('\n\n')
   design_name <- paste0("design_", i)
-  cat("### ", design_name, " \n\n")
+  cat("#### ", design_name, " \n\n")
   cat(c("number of DEGs found :", length(selected_genes_list[[design_name]]), '\n\n'))
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))]
   genes_ENSG <- row.names(norm.count_list[[design_name]])[match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]]), nomatch = 0)]
@@ -287,20 +295,23 @@ for ( i in 1:3 ) {
 
 ```
 
+Conclusion : le design 2 a un heatmap qui semble séparer au mieux les pre et post.
+
 <br/>
 <br/>
 
-## DEGs avec les échantillons contrôle
+### DEGs avec les échantillons contrôle
 
 Design : ~ Type + Time <br/>
 
-```{r DEGs 3 designs both, results='asis', echo=FALSE}
+```{r DEGs 3 designs pre post control lapnet, results='asis', echo=FALSE}
 
 dds <- DESeqDataSetFromMatrix(
   countData = count_matrix_restricted,
   colData = coldata_restricted,
   design = ~ Type + Time
 )
+dds$Time <- relevel(dds$Time, ref = "pre")
 dds <- DESeq(dds)
 norm.count <- assay(vst(dds, blind=FALSE))
 res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
@@ -345,123 +356,10 @@ heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)h
 
 ```
 
-## Conclusion
 
-Les designs 2 & 3 sont plus influencés par le réplicat biologique (HS5 ou HS27) que par notre variable d'intérêt (Type). On est donc obligés de passer sur une étude séparée des deux réplicats biologiques.
+### Cross-validation du design choisi
 
-
-<br/>
-
-
-# DEGs HS5
-
-## Choix du design {.tabset}
-
-Design 1 : ~ Type <br/>
-Design 2 : ~ Technical_replicate + Type <br/>
-Design 3 : ~ QC_duplication_perc + Technical_replicate + Type <br/>
-
-```{r DEGs 3 designs HS5, results='asis', echo=FALSE}
-
-design_1 <- as.formula("~ Type")
-design_2 <- as.formula("~ Technical_replicate + Type")
-design_3 <- as.formula("~ QC_duplication_perc_cr + Technical_replicate + Type")
-
-designs <- list(
-  design_1 = design_1,
-  design_2 = design_2,
-  design_3 = design_3
-)
-
-selected_genes_list <- list()
-norm.count_list <- list()
-res_list <- list()
-for (i in 1:3) {
-  design_name <- paste0("design_", i)
-  dds <- DESeqDataSetFromMatrix(
-    countData = count_matrix_HS5,
-    colData = coldata_HS5,
-    design = designs[[design_name]]
-  )
-  
-  dds <- DESeq(dds)
-  norm.count <- assay(vst(dds, blind=FALSE))
-  norm.count_list[[design_name]] <- norm.count
-  res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
-  res_list[[design_name]] <- res
-  resOrdered <- res[order(res$padj), ]
-  selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
-  selected_genes_list[[design_name]] <- selected_genes
-}
-
-venn(selected_genes_list)
-
-# coloration par quelques variables d'intérêt pour les heatmaps
-rep_col <- rainbow(length(unique(coldata_HS5$Technical_replicate)))
-names(rep_col) <- sort(unique(coldata_HS5$Technical_replicate))
-type_col <- c("cyan","black")
-names(type_col) <- c("ITD","control")
-column_ha = HeatmapAnnotation(
-  Type=coldata_HS5$Type,
-  TecRep=coldata_HS5$Technical_replicate,
-  col=list(Type=type_col,TecRep=rep_col
-  ))
-
-for ( i in 1:3 ) {
-  cat('\n\n')
-  design_name <- paste0("design_", i)
-  cat("### ", design_name, " \n\n")
-  cat(c("number of DEGs found :", length(selected_genes_list[[design_name]]), '\n\n'))
-  DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))]
-  genes_ENSG <- row.names(norm.count_list[[design_name]])[match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]]), nomatch = 0)]
-  cat("DEGs found: \n\n")
-  cat(c("ENSG id: ", genes_ENSG, '\n\n'))
-  cat(c("gene symbols: ", DEGs_gene_symbols, '\n\n'))
-  
-  # Volcano plots without shrink
-  with(res_list[[design_name]], plot(log2FoldChange, -log10(padj), pch=20, main=paste("Volcano plot design", i), cex=0.5))
-  with(subset(res_list[[design_name]], padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
-  with(subset(res_list[[design_name]], abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
-  with(subset(res_list[[design_name]], padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
-  
-  # heatmaps of the different designs
-  matrix_heatmap <- norm.count_list[[design_name]][match(genes_ENSG, row.names(norm.count_list[[design_name]])),]
-  rownames(matrix_heatmap) <- DEGs_gene_symbols
-  draw(Heatmap(as.matrix(matrix_heatmap),
-               clustering_distance_columns  = "pearson",
-               clustering_method_columns = "ward.D2",
-               clustering_distance_rows  = "pearson",
-               clustering_method_rows = "ward.D2",
-               top_annotation = column_ha))
-  heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
-
-  cat("\n\n")
-}
-
-
-# # Volcano plot shrinked
-# with(resLFCordered, plot(log2FoldChange, -log10(padj), pch=20, main="Volcano plot design2 shrinked", cex=0.5))
-# with(subset(resLFCordered, padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
-# with(subset(resLFCordered, abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
-# with(subset(resLFCordered, padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
-
-```
-
-<br/>
-<br/>
-
-
-## Conclusion 
-
-On choisit le design 2 : beaucoup de DEGs en commun avec les deux autres designs.
-
-
-
-
-
-## Cross-validation du design choisi
-
-```{r cross-validation HS5}
+```{r cross-validation pre post}
 
 cv_samples_DEGs <- function(count_matrix, coldata, design, padj.cutoff=0.05, lfc.cutoff=0.58) { #, coef
   
@@ -500,12 +398,12 @@ cv_samples_DEGs <- function(count_matrix, coldata, design, padj.cutoff=0.05, lfc
 }
 
 design_name <- paste0("design_", 2)
-check_repro <- cv_samples_DEGs(count_matrix_HS5, coldata_HS5, designs[[design_name]], padj.cutoff=padj.cutoff, lfc.cutoff=lfc.cutoff)
+check_repro <- cv_samples_DEGs(count_matrix_lapnet, coldata_lapnet, designs[[design_name]], padj.cutoff=padj.cutoff, lfc.cutoff=lfc.cutoff)
 all_DEGs <- do.call(c, check_repro$all)
 number_by_DEG <- table(all_DEGs)
 
 # finding the best min_nb compared to DEGs obtained with design_2
-for (min_nb in 2:5) {
+for (min_nb in 2:round(nrow(coldata_lapnet) * 0.95)) {
   DEGs_in_common <- list()
   for (DEG in rownames(number_by_DEG)) {
     if (number_by_DEG[[DEG]] > min_nb) {
@@ -524,7 +422,7 @@ for (min_nb in 2:5) {
   cat(paste("Nombre minimum de cross-val pour valider un DEG :", min_nb, ". Nombre de DEGs obtenus :", length(DEGs_in_common), "; nombre de DEGs en commun avec design_2 :", nb_in_common, "; % de DEGs de design_2 que cela représente :", perc_design, "; % de DEGs de cette cross-validation que cela représente :", perc_cv, "\n"))
 }
 
-min_nb <- 2 # 5 was too stringent
+min_nb <- 21 # 75% of the 28 samples
 DEGs_in_common <- list()
 for (DEG in rownames(number_by_DEG)) {
   if (number_by_DEG[[DEG]] > min_nb) {
@@ -536,11 +434,11 @@ print(c(design_name, length(DEGs_in_common)))
 DEGs_in_common_gene_symbols <- counts_genes$gene_name[match(DEGs_in_common, rownames(counts_genes))]
 
 dds <- DESeqDataSetFromMatrix(
-  countData = count_matrix_HS5,
-  colData = coldata_HS5,
+  countData = count_matrix_lapnet,
+  colData = coldata_lapnet,
   design = designs[[design_name]]
 )
-# dds$Time <- relevel(dds$Time, ref = "pre")
+dds$Time <- relevel(dds$Time, ref = "pre")
 dds <- DESeq(dds)
 norm_count <- assay(vst(dds, blind=FALSE))
 
@@ -551,18 +449,26 @@ heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)h
 
 ```
 
-Conclusion : il semble utile de conserver uniquement les DEGs en commun entre au moins 2 des 5 sous-datasets (constitués en retirant un des samples au dataset original), car le heatmap est plus net pour ces `r length(DEGs_in_common)` gènes-ci que pour les `r length(counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))])` gènes trouvés sans cross-validation.
+
+### Conclusions
+
+- L'ajout des contrôles ne permet plus de séparer les échantillons par la variable d'intérêt (Time) et ne trouve que 2 DEGs. On ne peut donc malheureusement pas les intégrer à notre étude, et il est à noter que cela remet en cause les DEGs obtenus sans les contrôles.
+- il semble utile de conserver uniquement les DEGs en commun entre au moins 21 des 28 sous-datasets (constitués en retirant un des samples au dataset original) soit 75%, car le heatmap est plus net pour ces `r length(DEGs_in_common)` gènes-ci que pour les `r length(counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))])` gènes trouvés sans cross-validation.
+
+<br/>
 
 
 
 ## Analyses des DEGs trouvés
 
 
-```{r lists for analyses of DEGs HS5}
+```{r lists for analyses of DEGs pre post}
 
 res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("col_interest", "factor1", "control")) 
 resOrdered <- res[order(res$padj), ]
-res_shrink <- lfcShrink(dds, coef="Type_ITD_vs_control", res=res)
+# connaître le dernier coef de dds
+# resultsNames(dds)
+res_shrink <- lfcShrink(dds, coef="Time_post_vs_pre", res=res)
 
 # # if we choose not to use the cross-validation DEGs:
 # selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
@@ -573,8 +479,8 @@ DEGs_gene_symbols <- DEGs_in_common_gene_symbols
 
 table_DEGs <- data.frame(selected_genes, DEGs_gene_symbols, res[match(selected_genes, row.names(res)), "stat"], res[match(selected_genes, row.names(res)), "padj"], res[match(selected_genes, row.names(res)), "log2FoldChange"])
 colnames(table_DEGs) <- c("ENSG", "gene_symbol", "stat", "padj", "log2FoldChange")
-table_DEGs$MedExpr_ctl <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata[which(coldata$Type == "control" & coldata$Biological_replicate == "HS5"), "SampleID"])], 1, median, na.rm=T)
-table_DEGs$MedExpr_ITD <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata[which(coldata$Type == "ITD" & coldata$Biological_replicate == "HS5"), "SampleID"])], 1, median, na.rm=T)
+table_DEGs$MedExpr_pre <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(row.names(coldata_lapnet[which(coldata_lapnet$Time == "pre"),]))], 1, median, na.rm=T)
+table_DEGs$MedExpr_post <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(row.names(coldata_lapnet[which(coldata_lapnet$Time == "post"),]))], 1, median, na.rm=T)
 table_DEGs$ENSG_clean <- sub("\\..*", "", table_DEGs$ENSG)
 table_DEGs <- table_DEGs[order(abs(table_DEGs$log2FoldChange)), ]
 
@@ -593,10 +499,10 @@ pathway$rank <- pathway$pvallog10 * sign(pathway$log2FoldChange) # from https://
 # rankgene <- deframe(pathway[, c("ENSG_clean", "rank")])
 pathway <- pathway[order(pathway$stat, decreasing = T),]
 
-# # to obtain Entrez IDs. /!\ Only perform it once by hand and save the result file, as HTTP requests on BioMart often fail
+# # to obtain Entrez IDs. /!\ Only perform it once by hand and save the result file, as HTTP requests on BioMart often fail ('Unable to query any Ensembl site')
 # ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
 # # ensembl_ids <- rownames(counts_genes)
-# ensembl_ids <- rownames(count_matrix_restricted)
+# ensembl_ids <- rownames(count_matrix_lapnet)
 # corresp_Ensembl_Entrez <- getBM(
 #   attributes = c(
 #     'ensembl_gene_id_version',
@@ -606,10 +512,9 @@ pathway <- pathway[order(pathway$stat, decreasing = T),]
 #   values = ensembl_ids,
 #   mart = ensembl
 # )
-# corresp_Ensembl_Entrez[nrow(corresp_Ensembl_Entrez) + 1,] <- c("ENSG00000000000.0", 0)
-# write.csv(corresp_Ensembl_Entrez, "./BCOR_EntrezID.csv", row.names = FALSE)
+# write.csv(corresp_Ensembl_Entrez, "./scripts/Mehlen_LapNet/prepost_EntrezID.csv", row.names = FALSE)
 
-corresp_Ensembl_Entrez <- read.csv('./BCOR_EntrezID.csv', sep=",")
+corresp_Ensembl_Entrez <- read.csv('./scripts/Mehlen_LapNet/prepost_EntrezID.csv', sep=",")
 # # there are no NA in the entrezgene_id column
 # sum(is.na(corresp_Ensembl_Entrez$entrezgene_id))
 # # there are duplicates: 577 for ensembl_gene_id_version and 1439 for entrezgene_id 
@@ -635,7 +540,7 @@ pathway_WOdupEntrez <- pathway[which(duplicated(pathway$Entrez) == F),]
 #### DEGs with positive LFC {.tabset}
 
 
-```{r ORA UP HS5, results='asis', echo=FALSE}
+```{r ORA UP pre post, results='asis', echo=FALSE}
 
 gsets_msigdb_h <- msigdbr(species = "human", collection = "H")
 gsets_msigdb_c2 <- msigdbr(species = "human", collection = "C2") # ne prendre que Reactome et/ou KEGG ?
@@ -682,7 +587,7 @@ figures_ORA <- function(results, name_geneset, type_DEG) {
   # Barplot
   # Most common method to visualize enriched terms. Shows enrichment scores (e.g. p values) and gene count or ratio as bar height and color 
   p1 <- barplot(results, showCategory = 12, 
-             title = paste("MSigDB", genesets_names[i], "Enrichment -", type_DEG, "regulated genes"))
+             title = paste("MSigDB", name_geneset, "Enrichment -", type_DEG, "regulated genes"))
   p2 <- mutate(results, qscore = -log(p.adjust, base = 10)) %>% 
   barplot(x = "qscore")
   # Dotplot
@@ -695,22 +600,22 @@ figures_ORA <- function(results, name_geneset, type_DEG) {
   # The heatplot is similar to cnetplot, while displaying the relationships as a heatmap. useful when there is a large number of significant terms
   p5 <- heatplot(results, showCategory = 12)
   # Treeplot
-  # The treeplot() function performs hierarchical clustering of enriched terms. I
-  enrichres2 <- pairwise_termsim(results) # calculate pairwise similarities of the enriched terms using Jaccard’s similarity index
-  p6 <- treeplot(enrichres2)
+  # The treeplot() function performs hierarchical clustering of enriched terms. 
+  enrichres2 <- enrichplot::pairwise_termsim(results) # calculate pairwise similarities of the enriched terms using Jaccard’s similarity index
+  p6 <- enrichplot::treeplot(enrichres2)
   # Enrichment map 
   # organizes enriched pathways into a network with edges connecting overlapping gene sets. In this way, mutually overlapping gene sets are tend to cluster together, making it easy to identify functional module.
   p7 <- emapplot(enrichres2)
   # Upsetplot
   # alternative to cnetplot. emphasizes the gene overlapping among different gene sets.
-  p8 <- upsetplot(results)
+  p8 <- enrichplot::upsetplot(results)
   
   return(list(plot1 = p1, plot2 = p2, plot3 = p3, plot4 = p4, plot5 = p5, plot6 = p6, plot7 = p7, plot8 = p8))
 }
 
 universe <- as.character(pathway$ENSG_clean) 
 DEGs_up <- table_DEGs[which(table_DEGs$log2FoldChange >0),'ENSG_clean']
-cat(paste("Nous avons", length(DEGs_up),"DEGs qui sont sur-exprimés dans notre condition d'intérêt \n\n"))
+cat(paste("Nous avons", length(DEGs_up),"DEGs qui sont sur-exprimés dans les échantillons post \n\n"))
 
 for (i in 1:length(genesets_names)) {
   tryCatch({
@@ -759,10 +664,11 @@ cat("\n\n")
 
 #### DEGs with negative LFC {.tabset}
 
-```{r ORA DOWN HS5, results='asis', echo=FALSE}
+
+```{r ORA DOWN pre post, results='asis', echo=FALSE}
 
 DEGs_down <- table_DEGs[which(table_DEGs$log2FoldChange <0),'ENSG_clean']
-cat(paste("Nous avons", length(DEGs_down),"DEGs qui sont sous-exprimés dans notre condition d'intérêt \n\n"))
+cat(paste("Nous avons", length(DEGs_down),"DEGs qui sont sur-exprimés dans les échantillons pre \n\n"))
 
 for (i in 1:length(genesets_names)) {
   tryCatch({
@@ -816,11 +722,11 @@ cat("\n\n")
 
 #### Using stat for the ranking {.tabset}
 
-```{r GSEA stat HS5, results='asis', echo=FALSE}
+```{r GSEA stat pre post, results='asis', echo=FALSE}
 
 res_shrink_tb <- res_shrink %>%
   data.frame() %>%
-  rownames_to_column(var="gene") %>% 
+  tibble::rownames_to_column(var="gene") %>% 
   as_tibble()
 res_ids <- inner_join(res_shrink_tb, corresp_Ensembl_Entrez_WOdup, by=c("gene"="ensembl_gene_id_version"))
 res_entrez <- dplyr::filter(res_ids, entrezgene_id != "NA")
@@ -867,13 +773,16 @@ gseaGO <- gseGO(geneList = foldchanges,
               pvalueCutoff = 0.05,
               verbose = FALSE) 
 gseaGO_results <- gseaGO@result
-ggplot(gseaGO_results[1:25,], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
+ggplot(gseaGO_results[1:min(25, nrow(gseaGO_results)),], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
      geom_point(stat = 'identity') + # if we remove "size=-p.adjust": size=10
      xlab("enrichmentScore") + ylab("") + ggtitle("GO pathways") + 
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
-for (i in 1:25) {
-  gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
+for (i in 1:min(25, nrow(gseaGO_results))) {
+  tryCatch({
+        gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
+    }, 
+    error = function(e) {})
 }
 cat("\n\n")
 
@@ -885,7 +794,7 @@ cat("\n\n")
 
 #### Using (logpvalue x sign(log2FC)) for the ranking {.tabset}
 
-```{r GSEA rank HS5, results='asis', echo=FALSE}
+```{r GSEA rank pre post, results='asis', echo=FALSE}
 
 # using the rank (logpvalue x sign(log2FC)) from the pathway dataframe
 tmp <- as.data.frame(pathway_WOdupEntrez)
@@ -911,12 +820,6 @@ ggplot(gseaKEGG_results, aes(x = enrichmentScore, y = reorder(Description, -p.ad
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
 ## Output images for all significant KEGG pathways
-get_kegg_plots <- function(x) {
-   gseaplot(gseaKEGG, geneSetID = gseaKEGG_results$ID[x], title = gseaKEGG_results$Description[x])
-   pathview(gene.data = foldchanges, pathway.id = gseaKEGG_results$ID[x], species = "hsa", 
-       limit = list(gene = 2, cpd = 1))
-   knitr::include_graphics(paste0(gseaKEGG_results$ID[x], ".png"))
-}
 # get_kegg_plots(1)
 
 cat("\n\n")
@@ -930,14 +833,14 @@ gseaGO <- gseGO(geneList = foldchanges,
               pvalueCutoff = 0.05,
               verbose = FALSE) 
 gseaGO_results <- gseaGO@result
-ggplot(gseaGO_results[1:25,], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
+ggplot(gseaGO_results[1:min(25, nrow(gseaGO_results)),], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
      geom_point(stat = 'identity') + # if we remove "size=-p.adjust": size=10
      xlab("enrichmentScore") + ylab("") + ggtitle("GO pathways") + 
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
-for (i in 1:25) {
+for (i in 1:min(25, nrow(gseaGO_results))) {
   tryCatch({
-    gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
+      gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
     }, 
     error = function(e) {})
 }
@@ -954,34 +857,40 @@ cat("\n\n")
 
 
 
-# DEGs HS27
+# DEGs survie pre
 
-## Choix du design {.tabset}
+## Recherche de DEGs
 
-Design 1 : ~ Type <br/>
-Design 2 : ~ Technical_replicate + Type <br/>
-Design 3 : ~ Purity_Estimate + Technical_replicate + Type <br/>
+### Choix du design (sans les contrôles) {.tabset}
 
-```{r DEGs 3 designs HS27, results='asis', echo=FALSE}
+On travaille sans les contrôles, car ils n'ont pas de données de survie.
 
-design_1 <- as.formula("~ Type")
-design_2 <- as.formula("~ Technical_replicate + Type")
-design_3 <- as.formula("~ Purity_Estimate_cr + Technical_replicate + Type")
+Design 1 : ~ Prog_status <br/>
+Design 2 : ~ Classif_collisson + Prog_status <br/>
+Design 3 : ~ Sex + Classif_collisson + Prog_status <br/>
 
+```{r DEGs 3 designs survie pre, results='asis', echo=FALSE}
+
+design_1 <- as.formula("~ Prog_status")
+design_2 <- as.formula("~ Classif_collisson + Prog_status")
+design_3 <- as.formula("~ Sex + Classif_collisson + Prog_status")
+# design_4 <- as.formula("~ OS_cr")
+  
 designs <- list(
   design_1 = design_1,
   design_2 = design_2,
   design_3 = design_3
+  # design_4 = design_4
 )
-
+  
 selected_genes_list <- list()
 norm.count_list <- list()
 res_list <- list()
 for (i in 1:3) {
   design_name <- paste0("design_", i)
   dds <- DESeqDataSetFromMatrix(
-    countData = count_matrix_HS27,
-    colData = coldata_HS27,
+    countData = count_matrix_pre,
+    colData = coldata_pre,
     design = designs[[design_name]]
   )
   
@@ -994,24 +903,27 @@ for (i in 1:3) {
   selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
   selected_genes_list[[design_name]] <- selected_genes
 }
-
+  
 venn(selected_genes_list)
 
 # coloration par quelques variables d'intérêt pour les heatmaps
-rep_col <- rainbow(length(unique(coldata_HS27$Technical_replicate)))
-names(rep_col) <- sort(unique(coldata_HS27$Technical_replicate))
-type_col <- c("cyan","black")
-names(type_col) <- c("ITD","control")
+OS_col <- rainbow(length(unique(coldata_pre$OS_cr)))
+names(OS_col) <- sort(unique(coldata_pre$OS_cr))
+ProgStat_col <- c("cyan","black")
+names(ProgStat_col) <- c("0", "1")
+Collisson_col <- c("yellow","magenta","green")
+names(Collisson_col) <- c("Classical","Exocrine-like","QM")
 column_ha = HeatmapAnnotation(
-  Type=coldata_HS27$Type,
-  TecRep=coldata_HS27$Technical_replicate,
-  col=list(Type=type_col,TecRep=rep_col
+  OS=coldata_pre$OS_cr,
+  ProgStatus=coldata_pre$Prog_status,
+  Collisson=coldata_pre$Classif_collisson,
+  col=list(Collisson=Collisson_col,OS=OS_col,ProgStatus=ProgStat_col
   ))
 
 for ( i in 1:3 ) {
   cat('\n\n')
   design_name <- paste0("design_", i)
-  cat("### ", design_name, " \n\n")
+  cat("#### ", design_name, " \n\n")
   cat(c("number of DEGs found :", length(selected_genes_list[[design_name]]), '\n\n'))
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))]
   genes_ENSG <- row.names(norm.count_list[[design_name]])[match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]]), nomatch = 0)]
@@ -1048,45 +960,43 @@ for ( i in 1:3 ) {
 
 ```
 
+Conclusion : on choisit le design 2 : il met tous les patients qui n'ont pas progressé dans le même bras du heatmap et ne sépare pas trop mal les Collisson. C'est le cas du design 3 également, mais ses heatmaps montrent que les DEGs sont pour la plupart influencés par un unique échantillon. 
+
 <br/>
 <br/>
 
-## Conclusion 
-
-On choisit le design 2 : beaucoup de DEGs en commun avec le design 1. Seul le design 3 sépare bien les Technical replicates, mais il a très peu de DEGs en commun avec les deux autres.
 
 
+### Cross-validation du design choisi
 
-## Cross-validation du design choisi
-
-```{r cross-validation HS27}
+```{r cross-validation survie pre}
 
 design_name <- paste0("design_", 2)
-check_repro <- cv_samples_DEGs(count_matrix_HS27, coldata_HS27, designs[[design_name]], padj.cutoff=padj.cutoff, lfc.cutoff=lfc.cutoff)
+check_repro <- cv_samples_DEGs(count_matrix_pre, coldata_pre, designs[[design_name]], padj.cutoff=padj.cutoff, lfc.cutoff=lfc.cutoff)
 all_DEGs <- do.call(c, check_repro$all)
 number_by_DEG <- table(all_DEGs)
 
-# # finding the best min_nb compared to DEGs obtained with design_1
-# for (min_nb in 2:5) {
-#   DEGs_in_common <- list()
-#   for (DEG in rownames(number_by_DEG)) {
-#     if (number_by_DEG[[DEG]] > min_nb) {
-#       DEGs_in_common <- append(DEGs_in_common, DEG)
-#     }
-#   }
-#   DEGs_in_common <- do.call(c, DEGs_in_common)
-#   nb_in_common <- 0
-#   for (gene in DEGs_in_common) {
-#     if (gene %in% rownames(counts_genes[match(selected_genes_list[["design_1"]], rownames(counts_genes)),])) { 
-#       nb_in_common <- nb_in_common + 1 
-#     } 
-#   }
-#   perc_design <- nb_in_common/length(rownames(counts_genes[match(selected_genes_list[["design_1"]], rownames(counts_genes)),]))
-#   perc_cv <- nb_in_common/length(DEGs_in_common)
-#   cat(paste("Nombre minimum de cross-val pour valider un DEG :", min_nb, ". Nombre de DEGs obtenus :", length(DEGs_in_common), "; nombre de DEGs en commun avec design_1 :", nb_in_common, "; % de DEGs de design_1 que cela représente :", perc_design, "; % de DEGs de cette cross-validation que cela représente :", perc_cv, "\n"))
-# }
+# finding the best min_nb compared to DEGs obtained with design_1
+for (min_nb in 2:round(nrow(coldata_pre) * 0.95)) {
+  DEGs_in_common <- list()
+  for (DEG in rownames(number_by_DEG)) {
+    if (number_by_DEG[[DEG]] > min_nb) {
+      DEGs_in_common <- append(DEGs_in_common, DEG)
+    }
+  }
+  DEGs_in_common <- do.call(c, DEGs_in_common)
+  nb_in_common <- 0
+  for (gene in DEGs_in_common) {
+    if (gene %in% rownames(counts_genes[match(selected_genes_list[["design_1"]], rownames(counts_genes)),])) {
+      nb_in_common <- nb_in_common + 1
+    }
+  }
+  perc_design <- nb_in_common/length(rownames(counts_genes[match(selected_genes_list[["design_1"]], rownames(counts_genes)),]))
+  perc_cv <- nb_in_common/length(DEGs_in_common)
+  cat(paste("Nombre minimum de cross-val pour valider un DEG :", min_nb, ". Nombre de DEGs obtenus :", length(DEGs_in_common), "; nombre de DEGs en commun avec design_1 :", nb_in_common, "; % de DEGs de design_1 que cela représente :", perc_design, "; % de DEGs de cette cross-validation que cela représente :", perc_cv, "\n"))
+}
 
-min_nb <- 5 
+min_nb <- 19
 DEGs_in_common <- list()
 for (DEG in rownames(number_by_DEG)) {
   if (number_by_DEG[[DEG]] > min_nb) {
@@ -1098,8 +1008,8 @@ print(c(design_name, length(DEGs_in_common)))
 DEGs_in_common_gene_symbols <- counts_genes$gene_name[match(DEGs_in_common, rownames(counts_genes))]
 
 dds <- DESeqDataSetFromMatrix(
-  countData = count_matrix_HS27,
-  colData = coldata_HS27,
+  countData = count_matrix_pre,
+  colData = coldata_pre,
   design = designs[[design_name]]
 )
 # dds$Time <- relevel(dds$Time, ref = "pre")
@@ -1109,21 +1019,32 @@ norm_count <- assay(vst(dds, blind=FALSE))
 genes_ENSG <- row.names(norm_count)[match(DEGs_in_common, rownames(norm_count), nomatch = 0)]
 matrix_heatmap <- norm_count[match(genes_ENSG, rownames(norm_count)),]
 rownames(matrix_heatmap) <- DEGs_in_common_gene_symbols
+draw(Heatmap(as.matrix(matrix_heatmap),
+               clustering_distance_columns  = "pearson",
+               clustering_method_columns = "ward.D2",
+               clustering_distance_rows  = "pearson",
+               clustering_method_rows = "ward.D2",
+               top_annotation = column_ha))
 heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 
 ```
 
-Conclusion : il semble utile de conserver uniquement les DEGs en commun entre tous les 5 sous-datasets (constitués en retirant un des samples au dataset original), car le heatmap est plus net pour ces `r length(DEGs_in_common)` gènes-ci que pour les `r length(counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))])` gènes trouvés sans cross-validation.
+
+### Conclusions
+
+Il semble utile de conserver uniquement les DEGs en commun entre au moins 19 des 24 sous-datasets (constitués en retirant un des samples au dataset original) soit 79%, car le heatmap est plus net pour ces `r length(DEGs_in_common)` gènes-ci que pour les `r length(counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))])` gènes trouvés sans cross-validation.
 
 
 
 ## Analyses des DEGs trouvés
 
-```{r lists for analyses of DEGs HS27}
+```{r lists for analyses of DEGs survie pre}
 
 res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("col_interest", "factor1", "control")) 
 resOrdered <- res[order(res$padj), ]
-res_shrink <- lfcShrink(dds, coef="Type_ITD_vs_control", res=res)
+# connaître le dernier coef de dds
+# resultsNames(dds)
+res_shrink <- lfcShrink(dds, coef="Prog_status_1_vs_0", res=res)
 
 # # if we choose not to use the cross-validation DEGs:
 # selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
@@ -1134,8 +1055,8 @@ DEGs_gene_symbols <- DEGs_in_common_gene_symbols
 
 table_DEGs <- data.frame(selected_genes, DEGs_gene_symbols, res[match(selected_genes, row.names(res)), "stat"], res[match(selected_genes, row.names(res)), "padj"], res[match(selected_genes, row.names(res)), "log2FoldChange"])
 colnames(table_DEGs) <- c("ENSG", "gene_symbol", "stat", "padj", "log2FoldChange")
-table_DEGs$MedExpr_ctl <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata[which(coldata$Type == "control" & coldata$Biological_replicate == "HS27"), "SampleID"])], 1, median, na.rm=T)
-table_DEGs$MedExpr_ITD <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata[which(coldata$Type == "ITD" & coldata$Biological_replicate == "HS27"), "SampleID"])], 1, median, na.rm=T)
+table_DEGs$MedExpr_Prog0 <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata_pre[which(coldata_pre$Prog_status == "0"), "SampleID"])], 1, median, na.rm=T)
+table_DEGs$MedExpr_Prog1 <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata_pre[which(coldata_pre$Prog_status == "1"), "SampleID"])], 1, median, na.rm=T)
 table_DEGs$ENSG_clean <- sub("\\..*", "", table_DEGs$ENSG)
 table_DEGs <- table_DEGs[order(abs(table_DEGs$log2FoldChange)), ]
 
@@ -1163,11 +1084,12 @@ pathway_WOdupEntrez <- pathway[which(duplicated(pathway$Entrez) == F),]
 
 #### DEGs with positive LFC {.tabset}
 
-```{r ORA UP HS27, results='asis', echo=FALSE}
+
+```{r ORA UP survie pre, results='asis', echo=FALSE}
 
 universe <- as.character(pathway$ENSG_clean) 
 DEGs_up <- table_DEGs[which(table_DEGs$log2FoldChange >0),'ENSG_clean']
-cat(paste("Nous avons", length(DEGs_up),"DEGs qui sont sur-exprimés dans notre condition d'intérêt \n\n"))
+cat(paste("Nous avons", length(DEGs_up),"DEGs qui sont sur-exprimés lorsque le patient a rencontré une progression de sa maladie \n\n"))
 
 
 for (i in 1:length(genesets_names)) {
@@ -1217,10 +1139,11 @@ cat("\n\n")
 
 #### DEGs with negative LFC {.tabset}
 
-```{r ORA DOWN HS27, results='asis', echo=FALSE}
+
+```{r ORA DOWN survie pre, results='asis', echo=FALSE}
 
 DEGs_down <- table_DEGs[which(table_DEGs$log2FoldChange <0),'ENSG_clean']
-cat(paste("Nous avons", length(DEGs_down),"DEGs qui sont sous-exprimés dans notre condition d'intérêt \n\n"))
+cat(paste("Nous avons", length(DEGs_down),"DEGs qui sont sous-exprimés lorsque le patient a rencontré une progression de sa maladie \n\n"))
 
 for (i in 1:length(genesets_names)) {
   tryCatch({
@@ -1274,7 +1197,7 @@ cat("\n\n")
 
 #### Using stat for the ranking {.tabset}
 
-```{r GSEA stat HS27, results='asis', echo=FALSE}
+```{r GSEA stat survie pre, results='asis', echo=FALSE}
 
 res_shrink_tb <- res_shrink %>%
   data.frame() %>%
@@ -1304,12 +1227,6 @@ ggplot(gseaKEGG_results, aes(x = enrichmentScore, y = reorder(Description, -p.ad
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
 ## Output images for all significant KEGG pathways
-get_kegg_plots <- function(x) {
-   gseaplot(gseaKEGG, geneSetID = gseaKEGG_results$ID[x], title = gseaKEGG_results$Description[x])
-   pathview(gene.data = foldchanges, pathway.id = gseaKEGG_results$ID[x], species = "hsa", 
-       limit = list(gene = 2, cpd = 1))
-   knitr::include_graphics(paste0(gseaKEGG_results$ID[x], ".png"))
-}
 # get_kegg_plots(1)
 # purrr::map(1:length(gseaKEGG_results$ID), get_kegg_plots)
 
@@ -1325,13 +1242,16 @@ gseaGO <- gseGO(geneList = foldchanges,
               pvalueCutoff = 0.05,
               verbose = FALSE) 
 gseaGO_results <- gseaGO@result
-ggplot(gseaGO_results[1:25,], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
+ggplot(gseaGO_results[1:min(25, nrow(gseaGO_results)),], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
      geom_point(stat = 'identity') + # if we remove "size=-p.adjust": size=10
      xlab("enrichmentScore") + ylab("") + ggtitle("GO pathways") + 
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
-for (i in 1:25) {
-  gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
+for (i in 1:min(25, nrow(gseaGO_results))) {
+  tryCatch({
+        gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
+    }, 
+    error = function(e) {})
 }
 cat("\n\n")
 
@@ -1343,7 +1263,7 @@ cat("\n\n")
 
 #### Using (logpvalue x sign(log2FC)) for the ranking {.tabset}
 
-```{r GSEA rank HS27, results='asis', echo=FALSE}
+```{r GSEA rank survie pre, results='asis', echo=FALSE}
 
 # using the rank (logpvalue x sign(log2FC)) from the pathway dataframe
 tmp <- as.data.frame(pathway_WOdupEntrez)
@@ -1369,12 +1289,6 @@ ggplot(gseaKEGG_results, aes(x = enrichmentScore, y = reorder(Description, -p.ad
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
 ## Output images for all significant KEGG pathways
-get_kegg_plots <- function(x) {
-   gseaplot(gseaKEGG, geneSetID = gseaKEGG_results$ID[x], title = gseaKEGG_results$Description[x])
-   pathview(gene.data = foldchanges, pathway.id = gseaKEGG_results$ID[x], species = "hsa", 
-       limit = list(gene = 2, cpd = 1))
-   knitr::include_graphics(paste0(gseaKEGG_results$ID[x], ".png"))
-}
 # get_kegg_plots(1)
 
 cat("\n\n")
@@ -1388,14 +1302,14 @@ gseaGO <- gseGO(geneList = foldchanges,
               pvalueCutoff = 0.05,
               verbose = FALSE) 
 gseaGO_results <- gseaGO@result
-ggplot(gseaGO_results[1:25,], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
+ggplot(gseaGO_results[1:min(25, nrow(gseaGO_results)),], aes(x = enrichmentScore, y = reorder(Description, -p.adjust), color = -p.adjust, size=-p.adjust)) + 
      geom_point(stat = 'identity') + # if we remove "size=-p.adjust": size=10
      xlab("enrichmentScore") + ylab("") + ggtitle("GO pathways") + 
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
-for (i in 1:25) {
+for (i in 1:min(25, nrow(gseaGO_results))) {
   tryCatch({
-    gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
+      gseaplot(gseaGO, geneSetID = gseaGO_results$ID[i], title = gseaGO_results$Description[i])
     }, 
     error = function(e) {})
 }
@@ -1411,16 +1325,26 @@ cat("\n\n")
 
 # Conclusion et remarques 
 
-Choix du design : le design choisi est le même pour HS5 et HS27 : ~ Technical_replicate + Type. Il permet d'éliminer la variabilité due aux réplicats techniques, afin de se concentrer uniquement sur celle due à l'ajout ou non du BCOR oncogène sur les cellules. <br/>
-Comme les heatmaps montrent que les DEGs identifiés ne sont pas toujours communs aux réplicats techniques, la cross-validation apparaît nécessaire sur ce jeu de données : pour HS5, une cross-validation pas trop stringente (2/5 des resampling minimum) car sinon le nombre de DEGs diminuait drastiquement ; pour HS27 au contraire une cross-validation stringente (trouvés dans l'ensemble des 5 resampling) car beaucoup de DEGs étaient trouvés spécifiquement dans le design 2 par rapport aux deux autres designs étudiés. <br/>
-<br/>
-Analyse des DEGs (ORA) :<br/>
-  - pour HS5, on obtient 125 DEGs : 108 up-régulés par l'ajout du BCOR oncogènes, 17 down-régulés. Les gènes up-régulés font nettement ressortir l'EMT et la matrice extracellulaire, les down-régulés ne font pas ressortir de voie particulière.<br/>
-  - pour HS27, on obtient 269 DEGs : 216 up-régulés par l'ajout du BCOR oncogènes, 53 down-régulés. Les gènes up-régulés ne font pas ressortir de voie particulière, les down-régulés font nettement ressortir l'EMT et la migration cellulaire.<br/>
-<br/>
+Le design choisi est : 
+
+- pour pre/post (effet de NP137) : ~ Classif_bailey + Time
+
+- pour la survie des échantillons pre (recherche de gènes d'intérêt) : ~ Classif_collisson + Prog_status
+
+Ils permettent d'éliminer la variabilité due aux réplicats techniques, afin de se concentrer uniquement sur celle due à notre variable d'intérêt. <br/>
+Comme les heatmaps montrent que les DEGs identifiés ne sont pas toujours communs aux réplicats techniques, la cross-validation apparaît nécessaire sur ce jeu de données : une cross-validation pas trop stringente (75% et 79% respectivement des resampling minimum) car sinon le nombre de DEGs diminuait drastiquement. <br/>
+
+
+Analyse des DEGs (ORA) :
+
+  - pour pre/post, on obtient 27 DEGs : 14 up-régulés dans les échantillons post (ayant été traités par NP137), 13 down-régulés. Bien qu'aucune voie ne ressorte clairement pour ces gènes (aucune adjusted p-value pour Hallmark et C2), 3 des gènes up-régulés sont généralement exprimés dans les neurones/synapses et 2 des gènes down-régulés dans le système immunitaire.
+
+  - pour survie pre, on obtient 17 DEGs : 9 up-régulés lorsque le patient a rencontré une progression de sa maladie, 8 down-régulés. Aucune voie particulière ne ressort pour ces groupes de gènes.<br/>
+
+
 Analyse de tous les changements d'expression (GSEA) : <br/>
-  - pour HS5 : les voies impactées semblent avoir un lien avec la machinerie de transcription.<br/>
-  - pour HS27 : il ne semble pas y avoir de voie d'intérêt qui ressort.<br/>
+  - pour pre/post : les voies impactées semblent avoir un lien avec le système immunitaire, le pancreas et les neurones.<br/>
+  - pour survie pre : il ne semble pas y avoir de voie d'intérêt qui ressort.<br/>
 <br/>
 
 
