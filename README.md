@@ -12,7 +12,7 @@ Codes from project LapNet, carried out at CRCL (Centre de Recherche en Cancérol
 
 The 4 files cited hereafter were used to study the 38 samples obtained from 30 patients (of which 6 samples are from 3 negative-control patients) during the LapNet clinical trial. 
 
-The goal of this trial was to assess if the addition of NP137 (Netrin-1 inhibitor) to the stander-of-care (modified FOLFIRINOX) would increase survival in first-line patients with locally advanced pancreatic cancer (LAPC). For this, samples where collected after receiving the treatment on 7 patients and 3 controls.
+The goal of this trial was to assess if the addition of NP137 (Netrin-1 inhibitor) to the stander-of-care (modified FOLFIRINOX) would increase survival in first-line patients with locally advanced pancreatic cancer (LAPC). For this, samples where collected after receiving the treatment on 27 patients and 3 controls.
 
 This clinical trial led to the publication of a paper in Nature: [Netrin1 blockade alleviates resistance to chemotherapy in pancreatic cancer](https://www.nature.com/articles/s41586-026-10436-4)
 
