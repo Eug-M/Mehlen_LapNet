@@ -1055,8 +1055,8 @@ DEGs_gene_symbols <- DEGs_in_common_gene_symbols
 
 table_DEGs <- data.frame(selected_genes, DEGs_gene_symbols, res[match(selected_genes, row.names(res)), "stat"], res[match(selected_genes, row.names(res)), "padj"], res[match(selected_genes, row.names(res)), "log2FoldChange"])
 colnames(table_DEGs) <- c("ENSG", "gene_symbol", "stat", "padj", "log2FoldChange")
-table_DEGs$MedExpr_Prog0 <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata_pre[which(coldata_pre$Prog_status == "0"), "SampleID"])], 1, median, na.rm=T)
-table_DEGs$MedExpr_Prog1 <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(coldata_pre[which(coldata_pre$Prog_status == "1"), "SampleID"])], 1, median, na.rm=T)
+table_DEGs$MedExpr_Prog0 <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(row.names(coldata_pre[which(coldata_pre$Prog_status == "0"), ]))], 1, median, na.rm=T)
+table_DEGs$MedExpr_Prog1 <- apply(norm_count[match(table_DEGs$ENSG, rownames(norm_count)), as.character(row.names(coldata_pre[which(coldata_pre$Prog_status == "1"), ]))], 1, median, na.rm=T)
 table_DEGs$ENSG_clean <- sub("\\..*", "", table_DEGs$ENSG)
 table_DEGs <- table_DEGs[order(abs(table_DEGs$log2FoldChange)), ]
 
