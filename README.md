@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 -->
 
 # Mehlen_LapNet
-Codes from project LapNet, carried out at CRCL (Centre de Recherche en Cancérologie de Lyon) facilities, using data from biotech Netris pharma.
+R scripts from project LapNet, carried out at CRCL (Centre de Recherche en Cancérologie de Lyon) facilities, using data from biotech Netris pharma.
 
 
 ## Sub-project 1: bulk RNA-Seq data from clinical study (phase Ib)
