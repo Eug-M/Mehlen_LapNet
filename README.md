@@ -20,7 +20,7 @@ This clinical trial led to the publication of a paper in Nature: [Netrin1 blocka
 As there is no consensus on the number of most-variable genes that should be used for the PCA, I decided to implement an elbow method on the variance (PC1 + PC2) explained by the number of top variable genes. 
 As the ultimate goal will be to choose which variable(s) to include in the DESeq2 design (cf. files rapport_LapNet_3_choixDesign.Rmd & rapport_LapNet_4_DEGs.Rmd), I also performed PLS (Partial Least Square) and the top variables contributing to the PCA variances, in order to have a first idea of which clinical variables most influence the gene expression in the samples.
 
-- rapport_LapNet_2_survival.Rmd: study of the link between expression of Netrin-1, and its 15 main known receptors as well as global EMT (Epithelial-Mesenchymal Transition) levels, and the patients' survival (OS & PFS). These results are also compared to the samples from a comparable study: [Nicolle et al. eBioMedicine 2024](https://pubmed.ncbi.nlm.nih.gov/39383608/). 
+- rapport_LapNet_2_survival.Rmd: study of the link between expression of Netrin-1, and its 15 main known receptors as well as global EMT (Epithelial-Mesenchymal Transition) levels, and the patients' survival (OS & PFS). These results are also compared to the samples from a comparable study: [Predictive genomic and transcriptomic analysis on endoscopic ultrasound-guided fine needle aspiration materials from primary pancreatic adenocarcinoma: a prospective multicentre study](https://pubmed.ncbi.nlm.nih.gov/39383608/). 
 This study notably uses Kaplan-Meier and ssGSEA statistical tests.
 
 - rapport_LapNet_3_choixDesign.Rmd: In addition to the PLS studies performed in the file rapport_LapNet_1_QC.Rmd, I performed here LRT (Likelihood Ratio Tests) with DESeq2 on the two different biological questions (difference in survival and difference of expressions before and after receiving the treatment), in order to automatically choose (i) the variable of interest when several clinical variables could be used; (ii) the best variables to include in the design to explain the noise in the data, so that more DEGs (Differentially-Expressed Genes) could be found.
@@ -30,7 +30,7 @@ In addition, regarding the samples that had a low QC, I checked the number of ge
 
 
 
-## Sub-project 2: single-cell RNA-Seq data from external studies
+## Sub-project 2: bulk & single-cell RNA-Seq data from external studies
 
 The files look into the data from two studies on the effect of Daraxonrasib (or RMC-6236, KRAS inhibitor), on the gene expression of human or mouse cancerous samples treated by Daraxonrasib.
 
