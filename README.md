@@ -17,7 +17,7 @@ The goal of this trial was to assess if the addition of NP137 (Netrin-1 inhibito
 This clinical trial led to the publication of a paper in Nature: [Netrin1 blockade alleviates resistance to chemotherapy in pancreatic cancer](https://www.nature.com/articles/s41586-026-10436-4)
 
 - rapport_LapNet_1_QC.Rmd: QC (Quality Control) checks on the 38 samples (PCA, hierarchical clustering heatmaps), in order to see if there are samples behaving incoherently, and decide if they should be removed from further analyses or not. The secondary goal is to find which variables better explain the two variables of interest of this study: survival and difference of expressions before and after receiving the treatment.
-As there is no consensus on the number of most-variable genes that should be used for the PCA, I decided to implement an elbow method on the variance (PC1 + PC2) explained by the number of top variable genes. 
+As there is no consensus on the number of most-variable genes that should be used for the gene counts PCA, I decided to implement an elbow method on the variance (PC1 + PC2) explained by the number of top variable genes. 
 As the ultimate goal will be to choose which variable(s) to include in the DESeq2 design (cf. files rapport_LapNet_3_choixDesign.Rmd & rapport_LapNet_4_DEGs.Rmd), I also performed PLS (Partial Least Square) and looked at the top variables contributing to the PCA variances, in order to have a first idea of which clinical variables most influence the gene expression in the samples.
 
 - rapport_LapNet_2_survival.Rmd: study of the link between expression of Netrin-1, and its 15 main known receptors as well as global EMT (Epithelial-Mesenchymal Transition) levels, and the patients' survival (OS & PFS). This study notably uses Kaplan-Meier and ssGSEA statistical tests. These results are also compared to the samples from a comparable study: [Predictive genomic and transcriptomic analysis on endoscopic ultrasound-guided fine needle aspiration materials from primary pancreatic adenocarcinoma: a prospective multicentre study](https://pubmed.ncbi.nlm.nih.gov/39383608/). 
@@ -29,7 +29,7 @@ In addition, regarding the samples that had a low QC, I checked the number of ge
 
 
 
-## Sub-project 2: bulk & single-cell RNA-Seq data from external studies
+## Sub-project 2: bulk & single-cell RNA-Seq data from external studies [work in progress]
 
 The files look into the data from two studies on the effect of Daraxonrasib (or RMC-6236, KRAS inhibitor), on the gene expression of human or mouse cancerous samples treated by Daraxonrasib.
 
