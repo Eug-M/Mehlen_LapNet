@@ -24,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 ```{r setup, results = "hide", include=F}
 #knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', fig.width = 5, fig.height = 4, out.width='100%', dpi = 150, cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Lapnet/"
 # setwd(path)
@@ -32,6 +32,22 @@ knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
+
+# Use Arial for the figures (downloaded with: apt-get install ttf-mscorefonts-installer)
+library(showtext)
+font_add("Arial", regular = "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf")  # path vary by OS
+showtext_auto()
+showtext_opts(dpi = 150)   # match dpi above, critical for showtext sizing
+# Set globally for all ggplot2 figures
+library(ggplot2)
+theme_set(theme_minimal(base_family = "Arial", base_size = 9))  
+# Set globally for all base plots
+knitr::knit_hooks$set(set_par = function(before, options, envir) {
+  if (before) {
+    par(family = "Arial", cex = 0.7)
+  }
+})
+knitr::opts_chunk$set(set_par = TRUE)
 ```
 
 ```{r report colors, results = "hide"}
@@ -84,7 +100,7 @@ library(fgsea)
 library(clusterProfiler)
 
 library("dplyr")
-library("ggplot2")
+# library("ggplot2")
 library('gplots')
 library("gridExtra")
 library("factoextra")
@@ -103,6 +119,10 @@ library(pathview)
 library(tibble)
 library(org.Hs.eg.db)
 # install.packages("estimate", repos="http://R-Forge.R-project.org")
+
+# if (!require(devtools)) install.packages("devtools")
+# devtools::install_github("gaospecial/ggVennDiagram")
+library("ggVennDiagram")
 
 '%!in%' <- function(x,y)!('%in%'(x,y))
 ```
@@ -238,22 +258,108 @@ for (i in 1:3) {
   selected_genes_list[[design_name]] <- selected_genes
 }
 
-venn(selected_genes_list)
+ggVennDiagram(selected_genes_list, label_alpha = 0) + 
+  ggplot2::scale_fill_gradient(low="blue",high = "red")
 
-# coloration par quelques variables d'intérêt pour les heatmaps
-purity_col <- rainbow(length(unique(coldata_lapnet$Purity_Estimate_cr)))
-names(purity_col) <- sort(unique(coldata_lapnet$Purity_Estimate_cr))
-Bailey_col <- c("cyan","blue","green","black")
-names(Bailey_col) <- c("ADEX","Immunogenic","Progenitor","Squamous")
-time_col <- c("yellow", "magenta")
-names(time_col) <- c("pre", "post")
-column_ha = HeatmapAnnotation(
-  Bailey=coldata_lapnet$Classif_bailey,
-  Purity=coldata_lapnet$Purity_Estimate_cr,
-  Time=coldata_lapnet$Time,
-  col=list(Time=time_col,Bailey=Bailey_col,Purity=purity_col
-  ))
-distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+# function to create the heatmap of DEGs for the whole file
+clust <- function(norm.count, coldata, graph_name, q=0){
+  # if q = 0.95, clustering is done from the normalised expression of the top 5% most variant genes
+  
+  # # top genes
+  # vari <- apply(norm.count, 1, mad)
+  # top <- which(vari > quantile(vari, q))
+  # 
+  # ## mad values for prot object
+  # MAD <- as.data.frame(cbind(MAD=vari, MADtop5pc=FALSE))
+  # rownames(MAD) <- names(vari)
+  # MAD$MADtop5pc[top] <- TRUE
+  
+  ## cluster data
+  matrix_heatmap <- as.matrix(norm.count)
+  annot <- coldata[colnames(matrix_heatmap),]
+  
+  ## cluster colors & legend
+  if (startsWith(graph_name, 'pre post')) {
+    purity_col <- colorRamp2(c(min(as.numeric(coldata$Purity_Estimate_cr)), mean(as.numeric(coldata$Purity_Estimate_cr)), max(as.numeric(coldata$Purity_Estimate_cr))), c("white", "orange", "red")) # rainbow(length(unique(coldata$Purity_Estimate_cr)))
+    # names(purity_col) <- sort(unique(coldata$Purity_Estimate_cr))
+    Bailey_col <- c("cyan","blue","green","black")
+    names(Bailey_col) <- c("ADEX","Immunogenic","Progenitor","Squamous")
+    time_col <- c("yellow", "magenta")
+    names(time_col) <- c("pre", "post")
+    
+    column_ha = HeatmapAnnotation(
+      Bailey=coldata$Classif_bailey,
+      Purity=as.numeric(coldata$Purity_Estimate_cr),
+      Time=coldata$Time,
+      col=list(Time=time_col, Bailey=Bailey_col, Purity=purity_col)
+      )
+  }
+  else if (startsWith(graph_name, 'control')) {
+    type_col <- c("cyan","black")
+    names(type_col) <- c("lapnet","control")
+    time_col <- c("yellow", "magenta")
+    names(time_col) <- c("pre", "post")
+    column_ha = HeatmapAnnotation(
+      Type=coldata$Type,
+      Time=coldata$Time,
+      col=list(Time=time_col,Type=type_col)
+      )
+  }
+  else { # pre
+    OS_col <- colorRamp2(c(min(as.numeric(coldata$OS_cr)), mean(as.numeric(coldata$OS_cr)), max(as.numeric(coldata$OS_cr))), c("white", "orange", "red"))
+    ProgStat_col <- c("cyan","black")
+    names(ProgStat_col) <- c("0", "1")
+    Collisson_col <- c("yellow","magenta","green")
+    names(Collisson_col) <- c("Classical","Exocrine-like","QM")
+    column_ha = HeatmapAnnotation(
+      OS=as.numeric(coldata$OS_cr),
+      ProgStatus=coldata$Prog_status,
+      Collisson=coldata$Classif_collisson,
+      col=list(Collisson=Collisson_col,OS=OS_col,ProgStatus=ProgStat_col)
+      )
+  }
+  
+  
+  ## heatmap
+  heatmap <-  Heatmap(matrix_heatmap, name = graph_name, # matrix_heatmap[top,]
+                      row_split = 2, column_split = 2,
+                      row_title = NULL,
+                      row_gap = unit(2, "mm"), border = TRUE,
+                      show_row_names = FALSE,
+                      column_title = graph_name,
+                      col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50),
+                      clustering_distance_columns  = "pearson",
+                      clustering_method_columns = "ward.D2",
+                      clustering_distance_rows  = "pearson",
+                      clustering_method_rows = "ward.D2",
+                      top_annotation = column_ha)
+  
+  ## partitions
+  # hc <- hclust(as.dist(1-cor(matrix_heatmap[top,],method = "pearson")), method = "ward.D2")
+  # allct <- NULL
+  # for(n in 2:4){
+  #   ct <- cutree(hc,n)
+  #   allct <- rbind(allct,ct[rownames(annot)])
+  # }
+  # rownames(allct) <- paste0(2:4,"_clusters")
+  # annot <- cbind(annot, t(allct))
+  # 
+  # # tests
+  # varcol <- c("Time","Classif_bailey","Prog_status","Classif_collisson")
+  # varcol <- varcol[varcol %in% names(annot)]
+  # clcol <- paste0(2:4,"_clusters")
+  # #allcol = c(varcol,clcol)
+  # M <- matrix(NA, nrow=length(clcol), ncol=length(varcol))
+  # aa <- annot[, c(clcol, varcol)]
+  # for(i in 1:length(clcol))
+  #   for(j in 1:length(varcol)){
+  #     M[i,j]  <- suppressWarnings(chisq.test(aa[, clcol[i]], aa[,varcol[j]])$p.value)
+  #   }
+  # rownames(M) <- clcol
+  # colnames(M) <- varcol
+  # return(list(heatmap=heatmap, vari=vari, MAD=MAD, annot=annot, test=format(M,scientific=T,digits=3)))
+  return(list(heatmap=heatmap))
+}
 
 for ( i in 1:3 ) {
   cat('\n\n')
@@ -267,21 +373,43 @@ for ( i in 1:3 ) {
   cat(c("gene symbols: ", DEGs_gene_symbols, '\n\n'))
   
   # Volcano plots without shrink
-  with(res_list[[design_name]], plot(log2FoldChange, -log10(padj), pch=20, main=paste("Volcano plot design", i), cex=0.5))
-  with(subset(res_list[[design_name]], padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
-  with(subset(res_list[[design_name]], abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
-  with(subset(res_list[[design_name]], padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+  res_list[[design_name]]$type <- case_when(
+  res_list[[design_name]]$log2FoldChange < -lfc.cutoff & res_list[[design_name]]$padj <= padj.cutoff ~ "Down",
+  res_list[[design_name]]$log2FoldChange > lfc.cutoff & res_list[[design_name]]$padj <= padj.cutoff ~ "Up",
+  # abs(res_list[[design_name]]$log2FoldChange) < lfc.cutoff & res_list[[design_name]]$padj <= padj.cutoff ~ "Not Variable",
+  is.na(res_list[[design_name]]$log2FoldChange) ~ "Not Variable",
+  is.na(res_list[[design_name]]$padj) ~ "Not Variable",
+  res_list[[design_name]]$padj > padj.cutoff ~ "Not Significant")
   
-  # heatmaps of the different designs
+  res_list[[design_name]]$gene_name <- counts_genes$gene_name[match(rownames(res_list[[design_name]]), rownames(counts_genes))]
+  res_list[[design_name]] <- res_list[[design_name]][order(res_list[[design_name]]$padj), ]
+  
+  plot <- ggplot(res_list[[design_name]], aes(x = log2FoldChange, y = -log10(padj), color = type)) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    scale_color_manual(values = c("Up" = "coral1", "Down" = "cornflowerblue", "Not Significant" = "gray")) + # "Not Variable" = "black",
+    geom_vline(xintercept = c(-lfc.cutoff, lfc.cutoff), linetype = "dashed", color = "black") +
+    geom_hline(yintercept = -log10(padj.cutoff), linetype = "dashed", color = "black") +
+    
+    # Label top 10 DEGs
+    geom_text_repel(data = res_list[[design_name]][1:10,], aes(label = gene_name), size = 3, force = 2) +
+    
+    # Highlight NTN1
+    geom_point(data = res_list[[design_name]][res_list[[design_name]]$gene_name == 'NTN1',], shape = 21, size = 4, stroke = 1.5, color = "black", fill = NA) +
+    geom_text_repel(data = res_list[[design_name]][res_list[[design_name]]$gene_name == 'NTN1',], aes(label = gene_name), size = 4, color = "black", fontface = "bold") +
+    
+    theme_minimal(base_size = 13) +
+    labs(title = paste('pre post', design_name),
+         x = "Log2FoldChange",
+         y = "-log10(padj)",
+         color = "DEG Status")
+  print(plot)
+  
+  # heatmap of the different designs
   matrix_heatmap <- norm.count_list[[design_name]][match(genes_ENSG, row.names(norm.count_list[[design_name]])),]
-  rownames(matrix_heatmap) <- DEGs_gene_symbols
-  draw(Heatmap(as.matrix(matrix_heatmap),
-               clustering_distance_columns  = "pearson",
-               clustering_method_columns = "ward.D2",
-               clustering_distance_rows  = "pearson",
-               clustering_method_rows = "ward.D2",
-               top_annotation = column_ha))
-  heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+  matrix_heatmap_scaled <- t(scale(t(matrix_heatmap)))
+  rownames(matrix_heatmap_scaled) <- DEGs_gene_symbols
+  clust_heatmap <- clust(matrix_heatmap_scaled, coldata_lapnet, paste('pre post', design_name))
+  draw(clust_heatmap$heatmap)
 
   cat("\n\n")
 }
@@ -319,17 +447,6 @@ resOrdered <- res[order(res$padj), ]
 selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
 
 
-# coloration par quelques variables d'intérêt pour les heatmaps
-type_col <- c("cyan","black")
-names(type_col) <- c("lapnet","control")
-time_col <- c("yellow", "magenta")
-names(time_col) <- c("pre", "post")
-column_ha = HeatmapAnnotation(
-  Type=coldata_restricted$Type,
-  Time=coldata_restricted$Time,
-  col=list(Time=time_col,Type=type_col
-  ))
-
 cat(c("number of DEGs found :", length(selected_genes), '\n\n'))
 DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes, rownames(counts_genes))]
 genes_ENSG <- row.names(norm.count)[match(selected_genes, rownames(norm.count), nomatch = 0)]
@@ -338,21 +455,42 @@ cat(c("ENSG id: ", genes_ENSG, '\n\n'))
 cat(c("gene symbols: ", DEGs_gene_symbols, '\n\n'))
   
 # Volcano plot without shrink
-with(res, plot(log2FoldChange, -log10(padj), pch=20, main="Volcano plot with controls", cex=0.5))
-with(subset(res, padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
-with(subset(res, abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
-with(subset(res, padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+res$type <- case_when(
+res$log2FoldChange < -lfc.cutoff & res$padj <= padj.cutoff ~ "Down",
+res$log2FoldChange > lfc.cutoff & res$padj <= padj.cutoff ~ "Up",
+# abs(res$log2FoldChange) < lfc.cutoff & res$padj <= padj.cutoff ~ "Not Variable",
+is.na(res$log2FoldChange) ~ "Not Variable",
+is.na(res$padj) ~ "Not Variable",
+res$padj > padj.cutoff ~ "Not Significant")
+
+res$gene_name <- counts_genes$gene_name[match(rownames(res), rownames(counts_genes))]
+res <- res[order(res$padj), ]
+
+ggplot(res, aes(x = log2FoldChange, y = -log10(padj), color = type)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("Up" = "coral1", "Down" = "cornflowerblue", "Not Significant" = "gray")) + # "Not Variable" = "black",
+  geom_vline(xintercept = c(-lfc.cutoff, lfc.cutoff), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(padj.cutoff), linetype = "dashed", color = "black") +
   
-# heatmaps 
+  # Label top 10 DEGs
+  geom_text_repel(data = res[1:10,], aes(label = gene_name), size = 3, force = 2) +
+  
+  # Highlight NTN1
+  geom_point(data = res[res$gene_name == 'NTN1',], shape = 21, size = 4, stroke = 1.5, color = "black", fill = NA) +
+  geom_text_repel(data = res[res$gene_name == 'NTN1',], aes(label = gene_name), size = 4, color = "black", fontface = "bold") +
+  
+  theme_minimal(base_size = 13) +
+  labs(title = paste(c('control', design_name)),
+       x = "Log2FoldChange",
+       y = "-log10(padj)",
+       color = "DEG Status")
+  
+# heatmap
 matrix_heatmap <- norm.count[match(genes_ENSG, row.names(norm.count)),]
-rownames(matrix_heatmap) <- DEGs_gene_symbols
-draw(Heatmap(as.matrix(matrix_heatmap),
-               clustering_distance_columns  = "pearson",
-               clustering_method_columns = "ward.D2",
-               clustering_distance_rows  = "pearson",
-               clustering_method_rows = "ward.D2",
-               top_annotation = column_ha))
-heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+matrix_heatmap_scaled <- t(scale(t(matrix_heatmap)))
+rownames(matrix_heatmap_scaled) <- DEGs_gene_symbols
+clust_heatmap <- clust(matrix_heatmap_scaled, coldata_restricted, paste('control', design_name))
+draw(clust_heatmap$heatmap)
 
 ```
 
@@ -422,7 +560,7 @@ for (min_nb in 2:round(nrow(coldata_lapnet) * 0.95)) {
   cat(paste("Nombre minimum de cross-val pour valider un DEG :", min_nb, ". Nombre de DEGs obtenus :", length(DEGs_in_common), "; nombre de DEGs en commun avec design_2 :", nb_in_common, "; % de DEGs de design_2 que cela représente :", perc_design, "; % de DEGs de cette cross-validation que cela représente :", perc_cv, "\n"))
 }
 
-min_nb <- 21 # 75% of the 28 samples
+min_nb <- 15 # 54% of the 28 samples
 DEGs_in_common <- list()
 for (DEG in rownames(number_by_DEG)) {
   if (number_by_DEG[[DEG]] > min_nb) {
@@ -444,8 +582,10 @@ norm_count <- assay(vst(dds, blind=FALSE))
 
 genes_ENSG <- row.names(norm_count)[match(DEGs_in_common, rownames(norm_count), nomatch = 0)]
 matrix_heatmap <- norm_count[match(genes_ENSG, rownames(norm_count)),]
-rownames(matrix_heatmap) <- DEGs_in_common_gene_symbols
-heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+matrix_heatmap_scaled <- t(scale(t(matrix_heatmap)))
+rownames(matrix_heatmap_scaled) <- DEGs_in_common_gene_symbols
+clust_heatmap <- clust(matrix_heatmap_scaled, coldata_lapnet, paste('pre post', design_name, "cv", min_nb))
+draw(clust_heatmap$heatmap)
 
 ```
 
@@ -453,7 +593,7 @@ heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)h
 ### Conclusions
 
 - L'ajout des contrôles ne permet plus de séparer les échantillons par la variable d'intérêt (Time) et ne trouve que 2 DEGs. On ne peut donc malheureusement pas les intégrer à notre étude, et il est à noter que cela remet en cause les DEGs obtenus sans les contrôles.
-- il semble utile de conserver uniquement les DEGs en commun entre au moins 21 des 28 sous-datasets (constitués en retirant un des samples au dataset original) soit 75%, car le heatmap est plus net pour ces `r length(DEGs_in_common)` gènes-ci que pour les `r length(counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))])` gènes trouvés sans cross-validation.
+- il semble utile de conserver uniquement les DEGs en commun entre au moins 15 des 28 sous-datasets (constitués en retirant un des samples au dataset original) soit 54%, car le heatmap est plus net pour ces `r length(DEGs_in_common)` gènes-ci que pour les `r length(counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))])` gènes trouvés sans cross-validation.
 
 <br/>
 
@@ -489,12 +629,12 @@ as.matrix(table_DEGs) %>%
 DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
 DT::formatStyle(columns = colnames(table_DEGs),fontSize = '80%')
 
-# creating pathway, used for GO analyses
+# creating pathway, used for GSEA analyses
 pathway <- res[!is.na(res$padj), ]
 pathway$ENSG <- rownames(pathway)
 pathway$ENSG_clean <- sub("\\..*", "", pathway$ENSG)
 pathway$pvallog10 <- log10(pathway$pvalue)
-pathway$rank <- pathway$pvallog10 * sign(pathway$log2FoldChange) # from https://www.biostars.org/p/9526168/
+pathway$rank <- -pathway$pvallog10 * sign(pathway$log2FoldChange) # from https://www.biostars.org/p/9526168/
 # pathway <- pathway[order(pathway$log2FoldChange, decreasing = T),]
 # rankgene <- deframe(pathway[, c("ENSG_clean", "rank")])
 pathway <- pathway[order(pathway$stat, decreasing = T),]
@@ -573,7 +713,7 @@ clustP_query <- function(genes, genesets, universe = NULL, adj_p_cutoff) {
         universe = universe,
         TERM2GENE = genes.sets.all,
         qvalueCutoff = adj_p_cutoff,
-        maxGSSize=1000
+        maxGSSize=10000
       )
     result <- as.data.frame(res)
   } else {
@@ -724,20 +864,36 @@ cat("\n\n")
 
 ```{r GSEA stat pre post, results='asis', echo=FALSE}
 
-res_shrink_tb <- res_shrink %>%
-  data.frame() %>%
-  tibble::rownames_to_column(var="gene") %>% 
-  as_tibble()
-res_ids <- inner_join(res_shrink_tb, corresp_Ensembl_Entrez_WOdup, by=c("gene"="ensembl_gene_id_version"))
-res_entrez <- dplyr::filter(res_ids, entrezgene_id != "NA")
-res_entrez <- res_entrez[which(duplicated(res_entrez$entrezgene_id) == F), ]
-foldchanges <- res_entrez$log2FoldChange
-names(foldchanges) <- res_entrez$entrezgene_id
-foldchanges <- sort(foldchanges, decreasing = TRUE)
+# res_shrink_tb <- res_shrink %>%
+#   data.frame() %>%
+#   tibble::rownames_to_column(var="gene") %>% 
+#   as_tibble()
+# res_ids <- inner_join(res_shrink_tb, corresp_Ensembl_Entrez_WOdup, by=c("gene"="ensembl_gene_id_version"))
+# res_entrez <- dplyr::filter(res_ids, entrezgene_id != "NA")
+# res_entrez <- res_entrez[which(duplicated(res_entrez$entrezgene_id) == F), ]
+# stats <- res_entrez$stat
+# names(stats) <- res_entrez$entrezgene_id
+# stats <- sort(stats, decreasing = TRUE)
+
+# res_tb <- res[!is.na(res$padj), ] %>%
+#   data.frame() %>%
+#   tibble::rownames_to_column(var="gene") %>% 
+#   as_tibble()
+# res_ids <- inner_join(res_tb, corresp_Ensembl_Entrez_WOdup, by=c("gene"="ensembl_gene_id_version"))
+# res_entrez <- dplyr::filter(res_ids, entrezgene_id != "NA")
+# res_entrez <- res_entrez[which(duplicated(res_entrez$entrezgene_id) == F), ]
+# stats <- res_entrez$stat
+# names(stats) <- res_entrez$entrezgene_id
+# stats <- sort(stats, decreasing = TRUE)
+
+tmp <- as.data.frame(pathway_WOdupEntrez)
+tmp <- dplyr::filter(tmp, Entrez != "NA")
+stats <- tmp$stat
+names(stats) <- tmp$Entrez
 
 cat("##### KEGG \n\n")
 ## GSEA using gene sets from KEGG pathways
-gseaKEGG <- gseKEGG(geneList = foldchanges, # ordered named vector of fold changes (Entrez IDs are the associated names)
+gseaKEGG <- gseKEGG(geneList = stats, # ordered named vector of fold changes (Entrez IDs are the associated names)
               organism = "hsa", # supported organisms listed below
               # nPerm = 1000, # default number permutations # not recommanded in the current version of GSEA
               minGSSize = 20, # minimum gene set size (# genes in set) - change to test more sets or recover sets with fewer # genes
@@ -754,7 +910,7 @@ ggplot(gseaKEGG_results, aes(x = enrichmentScore, y = reorder(Description, -p.ad
 ## Output images for all significant KEGG pathways
 get_kegg_plots <- function(x) {
    gseaplot(gseaKEGG, geneSetID = gseaKEGG_results$ID[x], title = gseaKEGG_results$Description[x])
-   pathview(gene.data = foldchanges, pathway.id = gseaKEGG_results$ID[x], species = "hsa", 
+   pathview(gene.data = stats, pathway.id = gseaKEGG_results$ID[x], species = "hsa", 
        limit = list(gene = 2, cpd = 1))
    knitr::include_graphics(paste0(gseaKEGG_results$ID[x], ".png"))
 }
@@ -766,7 +922,7 @@ cat("\n\n")
 
 
 cat("##### GO \n\n")
-gseaGO <- gseGO(geneList = foldchanges, 
+gseaGO <- gseGO(geneList = stats, 
               OrgDb = org.Hs.eg.db, 
               ont = 'BP', 
               minGSSize = 20, 
@@ -797,15 +953,13 @@ cat("\n\n")
 ```{r GSEA rank pre post, results='asis', echo=FALSE}
 
 # using the rank (logpvalue x sign(log2FC)) from the pathway dataframe
-tmp <- as.data.frame(pathway_WOdupEntrez)
-tmp <- dplyr::filter(tmp, Entrez != "NA")
-foldchanges <- tmp$rank
-names(foldchanges) <- tmp$Entrez
-foldchanges <- sort(foldchanges, decreasing = TRUE)
+ranks <- tmp$rank
+names(ranks) <- tmp$Entrez
+ranks <- sort(ranks, decreasing = TRUE)
 
 cat("##### KEGG \n\n")
 ## GSEA using gene sets from KEGG pathways
-gseaKEGG <- gseKEGG(geneList = foldchanges, # ordered named vector of fold changes (Entrez IDs are the associated names)
+gseaKEGG <- gseKEGG(geneList = ranks, # ordered named vector of fold changes (Entrez IDs are the associated names)
               organism = "hsa", # supported organisms listed below
               # nPerm = 1000, # default number permutations # not recommanded in the current version of GSEA
               minGSSize = 20, # minimum gene set size (# genes in set) - change to test more sets or recover sets with fewer # genes
@@ -826,7 +980,7 @@ cat("\n\n")
 
 
 cat("##### GO \n\n")
-gseaGO <- gseGO(geneList = foldchanges, 
+gseaGO <- gseGO(geneList = ranks, 
               OrgDb = org.Hs.eg.db, 
               ont = 'BP', 
               minGSSize = 20, 
@@ -904,21 +1058,8 @@ for (i in 1:3) {
   selected_genes_list[[design_name]] <- selected_genes
 }
   
-venn(selected_genes_list)
-
-# coloration par quelques variables d'intérêt pour les heatmaps
-OS_col <- rainbow(length(unique(coldata_pre$OS_cr)))
-names(OS_col) <- sort(unique(coldata_pre$OS_cr))
-ProgStat_col <- c("cyan","black")
-names(ProgStat_col) <- c("0", "1")
-Collisson_col <- c("yellow","magenta","green")
-names(Collisson_col) <- c("Classical","Exocrine-like","QM")
-column_ha = HeatmapAnnotation(
-  OS=coldata_pre$OS_cr,
-  ProgStatus=coldata_pre$Prog_status,
-  Collisson=coldata_pre$Classif_collisson,
-  col=list(Collisson=Collisson_col,OS=OS_col,ProgStatus=ProgStat_col
-  ))
+ggVennDiagram(selected_genes_list, label_alpha = 0) + 
+  ggplot2::scale_fill_gradient(low="blue",high = "red")
 
 for ( i in 1:3 ) {
   cat('\n\n')
@@ -932,31 +1073,46 @@ for ( i in 1:3 ) {
   cat(c("gene symbols: ", DEGs_gene_symbols, '\n\n'))
   
   # Volcano plots without shrink
-  with(res_list[[design_name]], plot(log2FoldChange, -log10(padj), pch=20, main=paste("Volcano plot design", i), cex=0.5))
-  with(subset(res_list[[design_name]], padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
-  with(subset(res_list[[design_name]], abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
-  with(subset(res_list[[design_name]], padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+  res_list[[design_name]]$type <- case_when(
+  res_list[[design_name]]$log2FoldChange < -lfc.cutoff & res_list[[design_name]]$padj <= padj.cutoff ~ "Down",
+  res_list[[design_name]]$log2FoldChange > lfc.cutoff & res_list[[design_name]]$padj <= padj.cutoff ~ "Up",
+  # abs(res_list[[design_name]]$log2FoldChange) < lfc.cutoff & res_list[[design_name]]$padj <= padj.cutoff ~ "Not Variable",
+  is.na(res_list[[design_name]]$log2FoldChange) ~ "Not Variable",
+  is.na(res_list[[design_name]]$padj) ~ "Not Variable",
+  res_list[[design_name]]$padj > padj.cutoff ~ "Not Significant")
   
-  # heatmaps of the different designs
+  res_list[[design_name]]$gene_name <- counts_genes$gene_name[match(rownames(res_list[[design_name]]), rownames(counts_genes))]
+  res_list[[design_name]] <- res_list[[design_name]][order(res_list[[design_name]]$padj), ]
+  
+  plot <- ggplot(res_list[[design_name]], aes(x = log2FoldChange, y = -log10(padj), color = type)) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    scale_color_manual(values = c("Up" = "coral1", "Down" = "cornflowerblue", "Not Significant" = "gray")) + # "Not Variable" = "black",
+    geom_vline(xintercept = c(-lfc.cutoff, lfc.cutoff), linetype = "dashed", color = "black") +
+    geom_hline(yintercept = -log10(padj.cutoff), linetype = "dashed", color = "black") +
+    
+    # Label top 10 DEGs
+    geom_text_repel(data = res_list[[design_name]][1:10,], aes(label = gene_name), size = 3, force = 2) +
+    
+    # Highlight NTN1
+    geom_point(data = res_list[[design_name]][res_list[[design_name]]$gene_name == 'NTN1',], shape = 21, size = 4, stroke = 1.5, color = "black", fill = NA) +
+    geom_text_repel(data = res_list[[design_name]][res_list[[design_name]]$gene_name == 'NTN1',], aes(label = gene_name), size = 4, color = "black", fontface = "bold") +
+    
+    theme_minimal(base_size = 13) +
+    labs(title = paste(c('pre', design_name)),
+         x = "Log2FoldChange",
+         y = "-log10(padj)",
+         color = "DEG Status")
+  print(plot)
+  
+  # heatmap of the different designs
   matrix_heatmap <- norm.count_list[[design_name]][match(genes_ENSG, row.names(norm.count_list[[design_name]])),]
-  rownames(matrix_heatmap) <- DEGs_gene_symbols
-  draw(Heatmap(as.matrix(matrix_heatmap),
-               clustering_distance_columns  = "pearson",
-               clustering_method_columns = "ward.D2",
-               clustering_distance_rows  = "pearson",
-               clustering_method_rows = "ward.D2",
-               top_annotation = column_ha))
-  heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+  matrix_heatmap_scaled <- t(scale(t(matrix_heatmap)))
+  rownames(matrix_heatmap_scaled) <- DEGs_gene_symbols
+  clust_heatmap <- clust(matrix_heatmap_scaled, coldata_pre, paste('pre', design_name))
+  draw(clust_heatmap$heatmap)
 
   cat("\n\n")
 }
-
-
-# # Volcano plot shrinked
-# with(resLFCordered, plot(log2FoldChange, -log10(padj), pch=20, main="Volcano plot design2 shrinked", cex=0.5))
-# with(subset(resLFCordered, padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
-# with(subset(resLFCordered, abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
-# with(subset(resLFCordered, padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
 
 ```
 
@@ -1018,14 +1174,10 @@ norm_count <- assay(vst(dds, blind=FALSE))
 
 genes_ENSG <- row.names(norm_count)[match(DEGs_in_common, rownames(norm_count), nomatch = 0)]
 matrix_heatmap <- norm_count[match(genes_ENSG, rownames(norm_count)),]
-rownames(matrix_heatmap) <- DEGs_in_common_gene_symbols
-draw(Heatmap(as.matrix(matrix_heatmap),
-               clustering_distance_columns  = "pearson",
-               clustering_method_columns = "ward.D2",
-               clustering_distance_rows  = "pearson",
-               clustering_method_rows = "ward.D2",
-               top_annotation = column_ha))
-heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+matrix_heatmap_scaled <- t(scale(t(matrix_heatmap)))
+rownames(matrix_heatmap_scaled) <- DEGs_in_common_gene_symbols
+clust_heatmap <- clust(matrix_heatmap_scaled, coldata_pre, paste('pre', 'cross-val'))
+draw(clust_heatmap$heatmap)
 
 ```
 
@@ -1065,12 +1217,12 @@ as.matrix(table_DEGs) %>%
 DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
 DT::formatStyle(columns = colnames(table_DEGs),fontSize = '80%')
 
-# creating pathway, used for GO analyses
+# creating pathway, used for GSEA analyses
 pathway <- res[!is.na(res$padj), ]
 pathway$ENSG <- rownames(pathway)
 pathway$ENSG_clean <- sub("\\..*", "", pathway$ENSG)
 pathway$pvallog10 <- log10(pathway$pvalue)
-pathway$rank <- pathway$pvallog10 * sign(pathway$log2FoldChange) # from https://www.biostars.org/p/9526168/
+pathway$rank <- -pathway$pvallog10 * sign(pathway$log2FoldChange) # from https://www.biostars.org/p/9526168/
 # pathway <- pathway[order(pathway$log2FoldChange, decreasing = T),]
 # rankgene <- deframe(pathway[, c("ENSG_clean", "rank")])
 pathway <- pathway[order(pathway$stat, decreasing = T),]
@@ -1199,20 +1351,14 @@ cat("\n\n")
 
 ```{r GSEA stat survie pre, results='asis', echo=FALSE}
 
-res_shrink_tb <- res_shrink %>%
-  data.frame() %>%
-  rownames_to_column(var="gene") %>% 
-  as_tibble()
-res_ids <- inner_join(res_shrink_tb, corresp_Ensembl_Entrez_WOdup, by=c("gene"="ensembl_gene_id_version"))
-res_entrez <- dplyr::filter(res_ids, entrezgene_id != "NA")
-res_entrez <- res_entrez[which(duplicated(res_entrez$entrezgene_id) == F), ]
-foldchanges <- res_entrez$log2FoldChange
-names(foldchanges) <- res_entrez$entrezgene_id
-foldchanges <- sort(foldchanges, decreasing = TRUE)
+tmp <- as.data.frame(pathway_WOdupEntrez)
+tmp <- dplyr::filter(tmp, Entrez != "NA")
+stats <- tmp$stat
+names(stats) <- tmp$Entrez
 
 cat("##### KEGG \n\n")
 ## GSEA using gene sets from KEGG pathways
-gseaKEGG <- gseKEGG(geneList = foldchanges, # ordered named vector of fold changes (Entrez IDs are the associated names)
+gseaKEGG <- gseKEGG(geneList = stats, # ordered named vector of fold changes (Entrez IDs are the associated names)
               organism = "hsa", # supported organisms listed below
               # nPerm = 1000, # default number permutations # not recommanded in the current version of GSEA
               minGSSize = 20, # minimum gene set size (# genes in set) - change to test more sets or recover sets with fewer # genes
@@ -1235,7 +1381,7 @@ cat("\n\n")
 
 
 cat("##### GO \n\n")
-gseaGO <- gseGO(geneList = foldchanges, 
+gseaGO <- gseGO(geneList = stats, 
               OrgDb = org.Hs.eg.db, 
               ont = 'BP', 
               minGSSize = 20, 
@@ -1266,15 +1412,15 @@ cat("\n\n")
 ```{r GSEA rank survie pre, results='asis', echo=FALSE}
 
 # using the rank (logpvalue x sign(log2FC)) from the pathway dataframe
-tmp <- as.data.frame(pathway_WOdupEntrez)
-tmp <- dplyr::filter(tmp, Entrez != "NA")
-foldchanges <- tmp$rank
-names(foldchanges) <- tmp$Entrez
-foldchanges <- sort(foldchanges, decreasing = TRUE)
+# tmp <- as.data.frame(pathway_WOdupEntrez)
+# tmp <- dplyr::filter(tmp, Entrez != "NA")
+ranks <- tmp$rank
+names(ranks) <- tmp$Entrez
+ranks <- sort(ranks, decreasing = TRUE)
 
 cat("##### KEGG \n\n")
 ## GSEA using gene sets from KEGG pathways
-gseaKEGG <- gseKEGG(geneList = foldchanges, # ordered named vector of fold changes (Entrez IDs are the associated names)
+gseaKEGG <- gseKEGG(geneList = ranks, # ordered named vector of fold changes (Entrez IDs are the associated names)
               organism = "hsa", # supported organisms listed below
               # nPerm = 1000, # default number permutations # not recommanded in the current version of GSEA
               minGSSize = 20, # minimum gene set size (# genes in set) - change to test more sets or recover sets with fewer # genes
@@ -1295,7 +1441,7 @@ cat("\n\n")
 
 
 cat("##### GO \n\n")
-gseaGO <- gseGO(geneList = foldchanges, 
+gseaGO <- gseGO(geneList = ranks, 
               OrgDb = org.Hs.eg.db, 
               ont = 'BP', 
               minGSSize = 20, 
@@ -1337,7 +1483,7 @@ Comme les heatmaps montrent que les DEGs identifiés ne sont pas toujours commun
 
 Analyse des DEGs (ORA) :
 
-  - pour pre/post, on obtient 27 DEGs : 14 up-régulés dans les échantillons post (ayant été traités par NP137), 13 down-régulés. Bien qu'aucune voie ne ressorte clairement pour ces gènes (aucune adjusted p-value pour Hallmark et C2), 3 des gènes up-régulés sont généralement exprimés dans les neurones/synapses et 2 des gènes down-régulés dans le système immunitaire.
+  - pour pre/post, on obtient 30 DEGs : 15 up-régulés dans les échantillons post (ayant été traités par NP137), 15 down-régulés. Bien qu'aucune voie ne ressorte clairement pour ces gènes (aucune adjusted p-value pour Hallmark et C2), 3 des gènes up-régulés sont généralement exprimés dans les neurones/synapses et 2 des gènes down-régulés dans le système immunitaire.
 
   - pour survie pre, on obtient 17 DEGs : 9 up-régulés lorsque le patient a rencontré une progression de sa maladie, 8 down-régulés. Aucune voie particulière ne ressort pour ces groupes de gènes.<br/>
 
