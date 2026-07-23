@@ -10,7 +10,7 @@ R scripts from project LapNet, carried out at CRCL (Centre de Recherche en Canc√
 
 ## Sub-project 1: bulk RNA-Seq data from clinical study (phase Ib)
 
-The 4 files cited hereafter were used to study the 38 samples obtained from 30 patients (of which 6 samples are from 3 negative-control patients) during the LapNet clinical trial. 
+The 4 files cited hereafter were used to study the 38 samples obtained from 30 patients (of which 6 samples are from 3 negative-control patients) during the LapNet clinical trial. They use functions stored in the R_functions folder.
 
 The goal of this trial was to assess if the addition of NP137 (Netrin-1 inhibitor) to the standard-of-care (modified FOLFIRINOX) would increase survival in first-line patients with locally advanced pancreatic cancer (LAPC). For this, samples where collected before receiving the treatment on 25 patients and 3 controls, and after the treatment on 7 patients (of whom 5 are on the same patient as before treatment) and 3 controls (same individuals).
 

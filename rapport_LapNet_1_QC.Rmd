@@ -26,9 +26,13 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 #knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
-path <- "/home/eugenie-modolo/Documents/Lapnet/"
+path <- "/home/eugenie-modolo/Documents/Lapnet/scripts/Mehlen_LapNet/"
 # setwd(path)
 knitr::opts_knit$set(root.dir = path)
+
+# files not specific to this project
+gft_ref = "/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf"
+mapping_lapnet = "/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Lapnet.csv"
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
@@ -97,94 +101,6 @@ library(MCPcounter) # pour aide Mcp-counter: ?MCPcounter.estimate
 
 '%!in%' <- function(x,y)!('%in%'(x,y))
 
-apply_gene_symbol_mapping <- function(count_matrix, mapping_file, df_genelengths = NULL) {
-  
-  # cat("=== APPLYING GENE SYMBOL MAPPING TO COUNT MATRIX ===\n\n")
-  
-  # Read mapping if it's a file path
-  if (is.character(mapping_file)) {
-    mapping <- read.csv(mapping_file, stringsAsFactors = FALSE)
-  } else {
-    mapping <- mapping_file
-  }
-  
-  # cat("Mapping contains", nrow(mapping), "gene symbols\n")
-  # cat("Count matrix contains", nrow(count_matrix), "genes\n\n")
-  
-  # gene_name <- mapping$external_gene_name[i] 
-  # Pre-compute which IDs exist in count_matrix 
-  available_ids <- rownames(count_matrix)
-  available_set <- as.list(setNames(rep(TRUE, length(available_ids)), available_ids))
-  
-  # Separate regular and merged
-  # is_merged <- grepl("_merged", mapping$final_gene_id)
-  is_merged <- mapping$resolution_strategy == 'summed'
-  regular_genes <- mapping[!is_merged, ]
-  merged_genes <- mapping[is_merged, ]
-  
-  # Process regular genes 
-  regular_ids_to_keep <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'final_gene_id']
-  # regular_ids_to_keep <- regular_genes$final_gene_id[regular_genes$final_gene_id %in% available_ids]
-  
-  if (is.null(df_genelengths)) {
-    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
-  } else {
-    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
-    new_matrix$gene_lengths <- df_genelengths$gene_length[match(regular_ids_to_keep, rownames(df_genelengths))]
-  }
-  rownames(new_matrix) <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'external_gene_name']
-  # rownames(new_matrix) <- regular_genes$external_gene_name[regular_genes$final_gene_id %in% available_ids]
-  
-  # cat("Kept", length(regular_ids_to_keep), "regular genes\n")
-  
-  # Process merged genes (only if they exist)
-  if (nrow(merged_genes) > 0) {
-    # cat("Processing", nrow(merged_genes), "merged genes...\n")
-    
-    # Pre-allocate matrix
-    n_samples <- ncol(count_matrix)
-    if (is.null(df_genelengths)) {
-      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples,
-                            dimnames = list(merged_genes$external_gene_name,
-                                            colnames(count_matrix))))
-    } else {
-      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples+1,
-                            dimnames = list(merged_genes$external_gene_name,
-                                            c(colnames(count_matrix), "gene_lengths"))))
-    }
-    
-    # Loop only through merged genes 
-    rows_to_remove <- list()
-    for (i in seq_len(nrow(merged_genes))) {
-      original_ids <- unlist(strsplit(merged_genes$ensembl_ids_to_use[[i]], ';'))
-      
-      # Fast check which IDs exist
-      existing_ids <- original_ids[original_ids %in% available_ids]
-      
-      if (length(existing_ids) > 0) {
-        if (is.null(df_genelengths)) {
-          merged_matrix[i, ] <- colSums(count_matrix[existing_ids, , drop = FALSE])
-        } else {
-          merged_matrix[i, ] <- c(colSums(count_matrix[existing_ids, , drop = FALSE]), 
-                                  sum(df_genelengths$gene_length[match(existing_ids, rownames(df_genelengths))]))
-        }
-      } else {
-        rows_to_remove <- c(rows_to_remove, -i)
-      }
-    }
-    rows_to_remove <- unlist(rows_to_remove)
-    if (length(rows_to_remove) > 0) {
-      merged_matrix <- merged_matrix[rows_to_remove,]
-    }
-    
-    # Combine
-    new_matrix <- rbind(new_matrix, merged_matrix)
-  }
-  
-  # cat("Output:", nrow(new_matrix), "genes x", ncol(new_matrix), "samples\n")
-  
-  return(new_matrix)
-}
 ```
 
 # Objectif
@@ -196,7 +112,7 @@ Remarque : comme un seul individu a une progression de type PD, nous allons grou
 ```{r creating dataframes}
 
 # colData
-coldata <- read.csv('./colData_LapNet.csv', sep=";")
+coldata <- read.csv('./data/colData_LapNet.csv', sep=";")
 coldata$Best_response_2 <- case_when(
   coldata$Best_response == "SD" ~ "SD_PD",
   coldata$Best_response == "PD" ~ "SD_PD", 
@@ -209,75 +125,11 @@ coldata$Type <- case_when(
 
 # Adding the Splines columns for tumor size progression
 # 0. Normalize tumor size at C0
-normalize_by_C0 <- function(coldata,
-                            size_cols = c("Size_lesion_C0", "Size_lesion_C4", 
-                                        "Size_lesion_C8", "Size_lesion_C12"),
-                            time_cols = c("Days_lesion_C0", "Days_lesion_C4", 
-                                        "Days_lesion_C8", "Days_lesion_C12")) {
-  
-  coldata$Size_norm_C0 <- NA
-  coldata$Size_norm_C4 <- NA
-  coldata$Size_norm_C8 <- NA
-  coldata$Size_norm_C12 <- NA
-  
-  for (i in 1:nrow(coldata)) {
-    factor_norm <- 100 / coldata$Size_lesion_C0[i]
-    coldata$Size_norm_C0[i] <- 100
-    coldata$Size_norm_C4[i] <- coldata$Size_lesion_C4[i] * factor_norm
-    coldata$Size_norm_C8[i] <- coldata$Size_lesion_C8[i] * factor_norm
-    coldata$Size_norm_C12[i] <- coldata$Size_lesion_C12[i] * factor_norm
-  }
-  return(coldata)
-}
-
+source("R_functions/normalize_by_C0.R")
 coldata <- normalize_by_C0(coldata)
 
 # 1. Fit natural splines for each patient
-calculate_tumor_spline <- function(coldata, 
-                                   size_cols = c("Size_norm_C0", "Size_norm_C4", 
-                                                 "Size_norm_C8", "Size_norm_C12"),
-                                   time_cols = c("Days_lesion_C0", "Days_lesion_C4", 
-                                                 "Days_lesion_C8", "Days_lesion_C12"),
-                                   df = 2) {  # degrees of freedom for spline
-  
-  coldata$tumor_spline_slope <- NA
-  coldata$tumor_spline_curvature <- NA
-  
-  for (i in 1:nrow(coldata)) {
-    sizes <- as.numeric(coldata[i, size_cols])
-    time_points <- as.numeric(coldata[i, time_cols])
-    valid_idx <- !is.na(sizes)
-    
-    if (sum(valid_idx) >= 3) {  # Need at least 3 points for spline
-      valid_sizes <- sizes[valid_idx]
-      valid_times <- time_points[valid_idx]
-      
-      tryCatch({
-        # Fit spline
-        spline_fit <- lm(valid_sizes ~ ns(valid_times, df = min(df, sum(valid_idx) - 1)))
-        
-        # Extract overall trend (coefficient of first spline basis)
-        coldata$tumor_spline_slope[i] <- coef(spline_fit)[2]
-        
-        # If enough df, get curvature (second derivative approximation)
-        if (length(coef(spline_fit)) > 2) {
-          coldata$tumor_spline_curvature[i] <- coef(spline_fit)[3]
-        }
-      }, error = function(e) {
-        # Skip if spline fails
-      })
-    } else if (sum(valid_idx) == 2) {
-      # Fall back to linear for 2 points
-      valid_sizes <- sizes[valid_idx]
-      valid_times <- time_points[valid_idx]
-      lm_fit <- lm(valid_sizes ~ valid_times)
-      coldata$tumor_spline_slope[i] <- coef(lm_fit)[2]
-    }
-  }
-  
-  return(coldata)
-}
-
+source("R_functions/calculate_tumor_spline.R")
 coldata <- calculate_tumor_spline(coldata, df = 2)
 
 coldata <- subset( coldata, select = - c(Size_lesion_C0, Size_lesion_C4, Size_lesion_C8, Size_lesion_C12, Days_lesion_C0, Days_lesion_C4, Days_lesion_C8, Days_lesion_C12, Best_response, Size_norm_C0))
@@ -293,7 +145,7 @@ factor_columns <- colnames(coldata) %!in% numeric_columns
 coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
 
 # countData (gene counts, not transcript's)
-counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+counts_genes <- read.table("./data/salmon.merged.gene_counts.tsv", 
                      header = TRUE, 
                      row.names = 1, 
                      sep = "\t",
@@ -308,7 +160,7 @@ count_matrix <- as.matrix(counts_genes[, count_columns])
 coldata <- data.frame(coldata, row.names = count_columns)
 
 # adding gene length to counts_genes
-txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf",format="gtf")
+txdb <- txdbmaker::makeTxDbFromGFF(gft_ref,format="gtf")
 # collect the exons per gene id
 exons.list.per.gene <- exonsBy(txdb,by="gene")
 # then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
@@ -317,7 +169,7 @@ match_index <- match(rownames(counts_genes), rownames(exonic.gene.sizes))
 counts_genes$gene_length <- exonic.gene.sizes[match_index, 1]
 
 # keeping only the protein-coding genes, as we used a protocol capturing only exons
-gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf')
+gtf <- import(gft_ref)
 gtf_df <- as.data.frame(gtf)
 gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
@@ -327,7 +179,8 @@ count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), 
 count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
 
 # Working with gene symbols
-mapping <- read.csv("/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Lapnet.csv", stringsAsFactors = FALSE)
+mapping <- read.csv(mapping_lapnet, stringsAsFactors = FALSE)
+source("R_functions/apply_gene_symbol_mapping.R")
 count_matrix_genesymbol <- apply_gene_symbol_mapping(
   count_matrix,
   mapping_file = mapping,
@@ -419,47 +272,7 @@ myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
 to_be_plotted <- c("SampleID", "Time", "Type", "Age", "Sex", "best_lesion_perc", "tumor_spline_slope", "OS", "Death_status", "PFS", "Prog_status", "Surg_status", "QC_duplication_perc", "QC_alignedM_Salmon", "QC_uniq_aligned", "Best_response_2")
 nber_top_genes <- nrow(count_matrix_pcg)
 
-create_myPCAplots <- function(df, column, PCx, PCy, nber_top_genes) {
-  pcaData <- plotPCA(rld, intgroup=column, pcsToUse=c(PCx,PCy), returnData=TRUE, ntop=nber_top_genes) #, ntop=1000)
-  percentVar <- round(100 * attr(pcaData, "percentVar"))
-  percent_x <- paste0(percentVar[1], "%")
-  percent_y <- paste0(percentVar[2], "%")
-  x <- paste0('PC', PCx)
-  y <- paste0('PC', PCy)
-  if (column == 'SampleID') {
-    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group, label=rownames(df))) +
-    geom_point(size=3) +
-    ggtitle(column) +
-    # theme(plot.title = element_text(hjust=0.95, vjust=0.15, margin = margin(t = -20, b = 10, r = 5), size=11),
-    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
-    geom_text_repel(hjust="top", vjust="top") +
-    geom_density2d(alpha=.5) +
-    coord_fixed() 
-    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
-  }
-  else if (column %in% numeric_columns) {
-    sc_color <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(df[,which(colnames(df) == column)]), max(df[,which(colnames(df) == column)])))
-    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group)) +
-    geom_point(size=3) +
-    ggtitle(column) +
-    # theme(plot.title = element_text(hjust=0.95, vjust=0.15, margin = margin(t = -20, b = 10, r = 5), size=11),
-    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
-    geom_density2d(alpha=.5) +
-    coord_fixed() +
-    sc_color
-    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
-  }
-  else {
-    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group)) +
-    geom_point(size=3) +
-    ggtitle(column) +
-    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
-    geom_density2d(alpha=.5) +
-    coord_fixed()
-    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
-  }
-}
-
+source("R_functions/create_myPCAplots.R")
 plot_list <- list()
 for (column in to_be_plotted) {
   newlist <- create_myPCAplots(coldata, column, 1, 2, nber_top_genes)
@@ -652,84 +465,8 @@ ggplot() +
 ### Top variables associated to PC axis 
 ```{r PCA both all top variables}
 
-# Function to assess variable contribution to PCs
-assess_variable_contribution <- function(rld, pca, ntop = 500, variables = NULL) {
-  
-  # If variables not specified, use all from colData
-  if (is.null(variables)) { variables <- colnames(colData(rld)) }
-  # # Calculate PCA # already done above, so added it to stdin
-  # rv <- MatrixGenerics::rowVars(assay(rld))
-  # select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
-  # pca <- prcomp(t(assay(rld)[select, ]))
-  # Get PC coordinates
-  pca_data <- data.frame(pca$x[, 1:2])
-  pca_data <- cbind(pca_data, colData(rld))
-  # Calculate variance explained
-  percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
-    # For each variable, calculate correlation/association with PCs
-  results_list <- list()
-  
-  for (var in variables) {
-    # print(var)
-    # Skip if variable doesn't exist or has only one level
-    if (!var %in% colnames(pca_data)) next
-    var_data <- pca_data[[var]]
-    # Check if variable is numeric or categorical
-    if (is.numeric(var_data) && !is.factor(var_data)) {
-      next  # we want only the centered and reduced variables (factors)
-      # # For numeric: calculate correlation
-      # cor_pc1 <- cor(pca_data$PC1, var_data, use = "complete.obs")
-      # cor_pc2 <- cor(pca_data$PC2, var_data, use = "complete.obs")
-      # # R-squared as measure of variance explained
-      # r2_pc1 <- cor_pc1^2 * 100
-      # r2_pc2 <- cor_pc2^2 * 100
-    } else if (is.factor(var_data) && endsWith(var, '_cr')) {
-      var_data <- as.numeric(as.vector(pca_data[[var]]))
-      cor_pc1 <- cor(pca_data$PC1, var_data, use = "complete.obs")
-      cor_pc2 <- cor(pca_data$PC2, var_data, use = "complete.obs")
-      # R-squared as measure of variance explained
-      r2_pc1 <- cor_pc1^2 * 100
-      r2_pc2 <- cor_pc2^2 * 100
-    }
-    else {
-      # For categorical: ANOVA / calculate eta-squared
-      var_data <- base::as.factor(var_data)
-      # Skip if only one level
-      if (length(levels(var_data)) < 2) next
-      # ANOVA for PC1
-      aov_pc1 <- aov(pca_data$PC1 ~ var_data)
-      ss_total_pc1 <- sum((pca_data$PC1 - mean(pca_data$PC1))^2)
-      ss_var_pc1 <- sum(aov_pc1$residuals^2)
-      r2_pc1 <- (1 - ss_var_pc1/ss_total_pc1) * 100
-      # ANOVA for PC2
-      aov_pc2 <- aov(pca_data$PC2 ~ var_data)
-      ss_total_pc2 <- sum((pca_data$PC2 - mean(pca_data$PC2))^2)
-      ss_var_pc2 <- sum(aov_pc2$residuals^2)
-      r2_pc2 <- (1 - ss_var_pc2/ss_total_pc2) * 100
-    }
-    
-    results_list[[var]] <- data.frame(
-      variable = var,
-      PC1_variance_explained = r2_pc1,
-      PC2_variance_explained = r2_pc2
-    )
-  }
-  
-  # Combine results
-  contribution_df <- do.call(rbind, results_list)
-  rownames(contribution_df) <- NULL
-  # Sort by PC1 contribution
-  contribution_df <- contribution_df[order(contribution_df$PC1_variance_explained, 
-                                          decreasing = TRUE), ]
-  
-  return(list(
-    contribution = contribution_df,
-    percentVar = percentVar,
-    pca_data = pca_data
-  ))
-}
-
-# Use the function
+# assess variable contribution to PCs
+source("R_functions/assess_variable_contribution.R")
 var_contribution <- assess_variable_contribution(rld, pca, ntop = nber_top_genes)
 
 # Plot the 2 PCs combined
@@ -762,143 +499,12 @@ ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
 ### Top variables contribution with PLS 
 ```{r PCA both all top variables PLS}
 
-# Function to assess variable importance using PLS
-assess_variable_pls <- function(coldata, rld, ntop = 500, ncomp = 2) {
-  
-  # Get expression data
-  rv <- MatrixGenerics::rowVars(assay(rld))
-  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
-  X <- t(assay(rld)[select, ])  # Samples x Genes
-  # Prepare Y matrix - convert categorical to dummy variables
-  Y_list <- list()
-  variable_names <- colnames(coldata)
-  
-  for (var in variable_names) {
-    var_data <- coldata[[var]]
-    # Skip if all NA
-    if (all(is.na(var_data))) next
-    # Skip if ID or equivalent # on ne peut pas prendre les classifications, qui sont déterminées directement sur les gènes présents dans le RNAseq (tourne en rond)
-    if (var == "SampleID" | var == "Date_traitement") next
-    if (is.numeric(var_data) && !is.factor(var_data)) {
-      next  # we want only the centered and reduced variables (factors)
-    } else if (is.factor(var_data) && endsWith(var, '_cr')) {
-      # Numeric variable - use as is (but centered and scaled)
-        Y_list[[var]] <- as.numeric(as.vector(var_data))
-    } else {
-      # Categorical - convert to dummy variables
-      var_factor <- base::as.factor(var_data)
-      if (length(levels(var_factor)) >= 2) {
-        # Create dummy variables (one-hot encoding)
-        dummy <- model.matrix(~ var_factor - 1)
-        colnames(dummy) <- paste0(var, "_", levels(var_factor))
-        Y_list[[var]] <- dummy
-      }
-    }
-    if (sum(is.na(var_data)) > 0) {
-      if (is.matrix(Y_list[[var]])) {
-        # Categorical variable stored as dummy matrix
-        new_rows <- matrix(NA, 
-                           nrow = length(which(is.na(var_data))), 
-                           ncol = ncol(Y_list[[var]]),
-                           dimnames = list(as.character(which(is.na(var_data))), colnames(Y_list[[var]]))
-                          )
-        Y_list[[var]] <- rbind(Y_list[[var]], new_rows)
-        Y_list[[var]] <- Y_list[[var]][order(as.numeric(rownames(Y_list[[var]]))), ]
-      } else {
-        # Numeric vector (_cr variables)
-        Y_list[[var]][which(is.na(var_data))] <- NA
-      }
-    }
-  }
-  
-  # Combine into Y matrix
-  Y <- do.call(cbind, Y_list)
-  
-  # Remove rows with NA
-  complete_cases <- complete.cases(X, Y)
-  X_clean <- X[complete_cases, ]
-  Y_clean <- Y[complete_cases, ]
-  
-  # Run PLS
-  pls_result <- pls(X_clean, Y_clean, ncomp = ncomp, mode = "regression")
-  
-  # Calculate variable importance for each component
-  importance_list <- list()
-  
-  for (comp in 1:ncomp) {
-    # Get loadings for Y variables
-    y_loadings <- pls_result$loadings$Y[, comp]
-    
-    # Calculate proportion of variance explained by each original variable
-    var_importance <- data.frame(
-      variable = character(),
-      loading = numeric(),
-      importance = numeric(),
-      stringsAsFactors = FALSE
-    )
-    
-    current_col <- 1
-    for (var in variable_names) {
-      if (var %in% names(Y_list)) {
-        n_cols <- ncol(as.matrix(Y_list[[var]]))
-        var_cols <- current_col:(current_col + n_cols - 1)
-        
-        # Sum of squared loadings for this variable
-        var_loading <- sum(y_loadings[var_cols]^2)
-        
-        var_importance <- rbind(var_importance, 
-                               data.frame(variable = var,
-                                        loading = sqrt(var_loading),
-                                        importance = var_loading * 100,
-                                        stringsAsFactors = FALSE))
-        
-        current_col <- current_col + n_cols
-      }
-    }
-    
-    importance_list[[paste0("Comp", comp)]] <- var_importance
-  }
-  
-  return(list(
-    pls_result = pls_result,
-    importance = importance_list,
-    var_explained = pls_result$prop_expl_var$X,
-    Y_matrix = Y_clean,
-    X_matrix = X_clean
-  ))
-}
-
-# Use the function
+# assess variable importance using PLS
+source("R_functions/assess_variable_pls.R")
 pls_results <- assess_variable_pls(coldata, rld, ntop = nber_top_genes, ncomp = 2)
 
-
 # Plot variable importance for both first components
-plot_pls_importance <- function(pls_results) {
-  # Component 1
-  imp1 <- pls_results$importance$Comp1
-  # imp1 <- imp1[order(imp1$importance, decreasing = TRUE), ]
-  imp1$component <- "Component 1"
-    # Component 2
-  imp2 <- pls_results$importance$Comp2
-  # imp2 <- imp2[order(imp2$importance, decreasing = TRUE), ]
-  imp2$component <- "Component 2"
-  
-  imp_combined <- rbind(imp1, imp2)
-  
-  ggplot(imp_combined, aes(x = reorder(variable, importance), y = importance, fill = component)) +
-    geom_bar(stat = "identity", position = "dodge") +
-    coord_flip() +
-    scale_fill_manual(values = c("Component 1" = "steelblue", 
-                                  "Component 2" = "coral")) +
-    labs(title = "Variable Importance - PLS Components 1 and 2",
-         x = "Variable",
-         y = "Importance (%)",
-         fill = "Component") +
-    theme_minimal()+
-    theme(legend.position = "top")
-  
-}
-
+source("R_functions/plot_pls_importance.R")
 plot_pls_importance(pls_results)
 
 ```
@@ -913,37 +519,9 @@ plot_pls_importance(pls_results)
 ### choosing optimal number of top variable genes
 ```{r PCA both variants optimal ntop}
 
-# Function to calculate variance explained by top N genes
-calculate_variance_by_ngenes <- function(rld, gene_numbers = seq(100, 2000, by = 100)) {
-  
-  # Get all gene variances
-  rv <- MatrixGenerics::rowVars(assay(rld))
-  results <- data.frame(
-    n_genes = integer(),
-    variance_explained = numeric()
-  )
-  
-  for (n in gene_numbers) {
-    # Select top n genes
-    select <- order(rv, decreasing = TRUE)[seq_len(min(n, length(rv)))]
-    # Run PCA on these genes
-    pca <- prcomp(t(assay(rld)[select, ]))
-    # Calculate total variance explained by first 2 PCs
-    percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
-    total_var_pc1_pc2 <- sum(percentVar[1:2])
-    # Or you can use variance explained by all PCs (should be close to 100%)
-    # For selection, typically we care about PC1+PC2
-    
-    results <- rbind(results, data.frame(
-      n_genes = n,
-      variance_explained = total_var_pc1_pc2
-    ))
-  }
-  return(results)
-}
-
-# Calculate for different gene numbers
+# Calculate variance explained by top N genes, for different gene numbers
 gene_numbers <- c(seq(100, 1000, by = 100), seq(1500, 3000, by = 500))
+source("R_functions/calculate_variance_by_ngenes.R")
 variance_results <- calculate_variance_by_ngenes(rld, gene_numbers)
 
 # Plot
@@ -1199,7 +777,6 @@ ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
 ```{r PCA both variants top variables PLS}
 
 pls_results <- assess_variable_pls(coldata, rld, ntop = nber_top_genes, ncomp = 2)
-
 plot_pls_importance(pls_results)
 
 ```

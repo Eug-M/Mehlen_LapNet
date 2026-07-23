@@ -27,9 +27,16 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 #knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
-path <- "/home/eugenie-modolo/Documents/Lapnet/"
+path <- "/home/eugenie-modolo/Documents/Lapnet/scripts/Mehlen_LapNet/"
 # setwd(path)
 knitr::opts_knit$set(root.dir = path)
+
+# files not specific to this project
+gft_ref = "/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf"
+Hallmark_EMT = '/home/eugenie-modolo/Documents/Reference_files/HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION.v2025.1.Hs.tsv'
+Mak_EMT = '/home/eugenie-modolo/Documents/Reference_files/EMT-MAK2015.csv'
+mapping_lapnet = "/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Lapnet.csv"
+mapping_Nicolle = "/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Nicolle.csv"
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
@@ -97,95 +104,6 @@ library(circlize)
 library(conflicted)
 library(estimate)
 
-
-apply_gene_symbol_mapping <- function(count_matrix, mapping_file, df_genelengths = NULL) {
-  
-  # cat("=== APPLYING GENE SYMBOL MAPPING TO COUNT MATRIX ===\n\n")
-  
-  # Read mapping if it's a file path
-  if (is.character(mapping_file)) {
-    mapping <- read.csv(mapping_file, stringsAsFactors = FALSE)
-  } else {
-    mapping <- mapping_file
-  }
-  
-  # cat("Mapping contains", nrow(mapping), "gene symbols\n")
-  # cat("Count matrix contains", nrow(count_matrix), "genes\n\n")
-  
-  # gene_name <- mapping$external_gene_name[i] 
-  # Pre-compute which IDs exist in count_matrix 
-  available_ids <- rownames(count_matrix)
-  available_set <- as.list(setNames(rep(TRUE, length(available_ids)), available_ids))
-  
-  # Separate regular and merged
-  # is_merged <- grepl("_merged", mapping$final_gene_id)
-  is_merged <- mapping$resolution_strategy == 'summed'
-  regular_genes <- mapping[!is_merged, ]
-  merged_genes <- mapping[is_merged, ]
-  
-  # Process regular genes 
-  regular_ids_to_keep <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'final_gene_id']
-  # regular_ids_to_keep <- regular_genes$final_gene_id[regular_genes$final_gene_id %in% available_ids]
-  
-  if (is.null(df_genelengths)) {
-    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
-  } else {
-    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
-    new_matrix$gene_lengths <- df_genelengths$gene_length[match(regular_ids_to_keep, rownames(df_genelengths))]
-  }
-  rownames(new_matrix) <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'external_gene_name']
-  # rownames(new_matrix) <- regular_genes$external_gene_name[regular_genes$final_gene_id %in% available_ids]
-  
-  # cat("Kept", length(regular_ids_to_keep), "regular genes\n")
-  
-  # Process merged genes (only if they exist)
-  if (nrow(merged_genes) > 0) {
-    # cat("Processing", nrow(merged_genes), "merged genes...\n")
-    
-    # Pre-allocate matrix
-    n_samples <- ncol(count_matrix)
-    if (is.null(df_genelengths)) {
-      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples,
-                            dimnames = list(merged_genes$external_gene_name,
-                                            colnames(count_matrix))))
-    } else {
-      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples+1,
-                            dimnames = list(merged_genes$external_gene_name,
-                                            c(colnames(count_matrix), "gene_lengths"))))
-    }
-    
-    # Loop only through merged genes 
-    rows_to_remove <- list()
-    for (i in seq_len(nrow(merged_genes))) {
-      original_ids <- unlist(strsplit(merged_genes$ensembl_ids_to_use[[i]], ';'))
-      
-      # Fast check which IDs exist
-      existing_ids <- original_ids[original_ids %in% available_ids]
-      
-      if (length(existing_ids) > 0) {
-        if (is.null(df_genelengths)) {
-          merged_matrix[i, ] <- colSums(count_matrix[existing_ids, , drop = FALSE])
-        } else {
-          merged_matrix[i, ] <- c(colSums(count_matrix[existing_ids, , drop = FALSE]), 
-                                  sum(df_genelengths$gene_length[match(existing_ids, rownames(df_genelengths))]))
-        }
-      } else {
-        rows_to_remove <- c(rows_to_remove, -i)
-      }
-    }
-    rows_to_remove <- unlist(rows_to_remove)
-    if (length(rows_to_remove) > 0) {
-      merged_matrix <- merged_matrix[rows_to_remove,]
-    }
-    
-    # Combine
-    new_matrix <- rbind(new_matrix, merged_matrix)
-  }
-  
-  # cat("Output:", nrow(new_matrix), "genes x", ncol(new_matrix), "samples\n")
-  
-  return(new_matrix)
-}
 ```
 
 # Objectif
@@ -207,8 +125,8 @@ Remarque : pour les 6 échantillons contrôles de LapNet, nous n'avons aucune do
 ```{r tableaux donnees cliniques}
 
 # LapNet
-coldata_lapnet <- read.csv('./colData_LapNet.csv', sep=";")
-counts_genes_lapnet <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+coldata_lapnet <- read.csv('./data/colData_LapNet.csv', sep=";")
+counts_genes_lapnet <- read.table("./data/salmon.merged.gene_counts.tsv", 
                      header = TRUE, 
                      row.names = 1, 
                      sep = "\t",
@@ -225,7 +143,7 @@ count_columns_lapnet <- colnames(counts_genes_lapnet)[colnames(counts_genes_lapn
 
 
 # Nicolle
-coldata_control_all <- read.csv('./donnees_control_LPAC/clinical_data.csv', sep="\t")
+coldata_control_all <- read.csv('./data/Nicolle_clinical_data.csv', sep="\t")
 coldata_control_all <- data.frame(coldata_control_all, row.names = coldata_control_all$sample_id)
 coldata_control_all$OS <- coldata_control_all$os_month*30.5
 coldata_control_all$PFS <- coldata_control_all$pfs_month*30.5
@@ -278,7 +196,7 @@ counts_genes_lapnet[count_columns_lapnet] <- round(counts_genes_lapnet[count_col
 count_matrix_lapnet <- as.matrix(counts_genes_lapnet[, count_columns_lapnet])
 
 # adding gene length to counts_genes
-txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf",format="gtf")
+txdb <- txdbmaker::makeTxDbFromGFF(gft_ref,format="gtf")
 # collect the exons per gene id
 exons.list.per.gene <- exonsBy(txdb,by="gene")
 # then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
@@ -287,7 +205,7 @@ match_index <- match(rownames(counts_genes_lapnet), rownames(exonic.gene.sizes))
 counts_genes_lapnet$gene_length <- exonic.gene.sizes[match_index, 1]
 
 # keeping only the protein-coding genes, as we used a protocol capturing only exons
-gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf')
+gtf <- import(gft_ref)
 gtf_df <- as.data.frame(gtf)
 gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
@@ -296,7 +214,8 @@ keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
 count_matrix_pcg_lapnet <- counts_genes_lapnet[match(keep_genes, rownames(counts_genes_lapnet)), ]
 count_matrix_pcg_lapnet <- as.matrix(count_matrix_pcg_lapnet[, count_columns_lapnet])
 
-mapping_lapnet <- read.csv("/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Lapnet.csv", stringsAsFactors = FALSE)
+mapping_lapnet <- read.csv(mapping_lapnet, stringsAsFactors = FALSE)
+source("R_functions/apply_gene_symbol_mapping.R")
 count_matrix_genesymbol_lapnet <- apply_gene_symbol_mapping(
   count_matrix_lapnet, 
   mapping_file = mapping_lapnet,
@@ -328,7 +247,7 @@ gene_lengths <- count_matrix_pcg_genesymbol_lapnet$gene_lengths#[match(rownames(
 norm.count_pcg_genesymbol_lapnet_K <- as.matrix(norm.count_pcg_genesymbol_lapnet/gene_lengths)
 
 # Nicolle
-counts_genes_control <- read.table("./donnees_control_LPAC/GSE253260_BACAP.rawct.tsv",
+counts_genes_control <- read.table("./data/Nicolle_GSE253260_BACAP.rawct.tsv",
                      header = TRUE, 
                      row.names = 1, 
                      sep = "\t",
@@ -343,7 +262,7 @@ match_index <- match(rownames(counts_genes_control), sub("\\..*", "", rownames(e
 counts_genes_control$gene_length <- exonic.gene.sizes[match_index, 1]
 count_matrix_pcg_control <- counts_genes_control[match(sub("\\..*", "", keep_genes), rownames(counts_genes_control)), ]
 count_matrix_pcg_control <- as.matrix(count_matrix_pcg_control[, count_columns_control])
-mapping_control <- read.csv("/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Nicolle.csv", stringsAsFactors = FALSE)
+mapping_control <- read.csv(mapping_Nicolle, stringsAsFactors = FALSE)
 count_matrix_genesymbol_control <- apply_gene_symbol_mapping(
   count_matrix_control, 
   mapping_file = mapping_control,
@@ -424,24 +343,7 @@ DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
 DT::formatStyle(columns = colnames(coldata_control),fontSize = '80%')
 
 # draw histograms for each gene of interest
-create_gene_histograms <- function(gene_name, df1, df2) {
-  gene_log <- paste0(gene_name, "_log")
-  
-  p1 <- ggplot(df1, aes(x = .data[[gene_log]])) + 
-    geom_histogram() +
-    expand_limits(x = 0, y = 0) +
-    ggtitle(paste0("log2(", gene_name, "+1) LapNet"))
-  
-  p2 <- ggplot(df2, aes(x = .data[[gene_log]])) + 
-    geom_histogram() +
-    expand_limits(x = 0, y = 0) +
-    ggtitle(paste0("log2(", gene_name, "+1) Nicolle"))
-  
-  # grid.arrange(p1, p2, nrow = 1)
-  return(list(plot1 = p1, plot2 = p2))
-}
-
-
+source("R_functions/create_gene_histograms.R")
 for (gene in genes_of_interest) {
   cat("### ", gene, " \n\n")
   res <- create_gene_histograms(gene, coldata_lapnet, coldata_control)
@@ -518,80 +420,8 @@ Médianes PFS selon  : `r legend_order[1]`
 
 ```{r Kaplan-Meier all genes of interest by tabs, results='asis', echo=FALSE}
 
-# Function to create KM plots OS & PFS with corrected p-value
-plot_km_corrected <- function(data, origin, gene_column, type = 'OS', n_tests = 1) {
-
-  col_level <- paste0(unlist(strsplit(gene_column, split='_', fixed=TRUE))[1], '_level_', origin)
-  data[[col_level]] <- case_when(
-    data[[gene_column]] > median(data[which(data$Origin == origin),gene_column]) ~ "High",
-    data[[gene_column]] <= median(data[which(data$Origin == origin),gene_column]) ~ "Low")
-  # Create formula
-  if (type == 'OS') {
-    formula_surv <- as.formula(paste("Surv(OS, Death_status) ~", col_level))
-    y_lab = "Overall Survival"
-  }
-  else {
-    formula_surv <- as.formula(paste("Surv(PFS, Prog_status) ~", col_level))
-    y_lab = "Progression Free Survival"
-  }
-  if (origin == "LapNet") {
-    break_time = 50
-  }
-  else {
-    break_time = 100
-  }
-  tryCatch({
-  # Fit KM
-  km_fit <- surv_fit(formula_surv, data = data[which(data$Origin == origin),])
-  # Calculate p-value
-  logrank_test <- survdiff(formula_surv, data = data[which(data$Origin == origin),])
-  pval_raw <- pchisq(logrank_test$chisq, 
-                     df = length(logrank_test$n) - 1, 
-                     lower.tail = FALSE)
-  # Bonferroni correction
-  pval_corrected <- min(pval_raw * n_tests, 1)
-  # Create label
-  pval_label <- paste0(
-    "p = ", format.pval(pval_raw, digits = 3), 
-    "\nBonf. adj. p = ", format.pval(pval_corrected, digits = 3)
-  )
-  # Legend order
-  legend_order <- gsub(paste0(col_level, "="), "", names(km_fit$strata))
-  # Plot
-  p1 <- survminer::ggsurvplot(
-    km_fit, 
-    data = data[which(data$Origin == origin),], 
-    conf.int = TRUE,
-    surv.scale = "percent",
-    break.time.by = break_time,
-    xlab = "Follow-up (months)",
-    ylab = y_lab,
-    pval = pval_label,
-    pval.coord = c(0, 0.15),
-    risk.table = TRUE,
-    legend.title = paste0(unlist(strsplit(gene_column, split='_', fixed=TRUE))[1], " level"),
-    legend.labs = legend_order,
-    font.legend = 10, 
-    palette = "Dark2",
-    surv.median.line = "hv",
-    ggtheme = theme_light(),
-    title = paste(type, origin)
-  )
-  # message(c('Médianes obtenues', type, ' ', origin, ' : \n', legend_order[1], ' : ', median(km_fit)[1], '\n', legend_order[2], ' : ', median(km_fit)[2]))
-  # return(p1)
-  msg <- c(
-    paste('Médianes obtenues', type, origin, ': \n'),
-    paste(legend_order[1], ':', median(km_fit)[1], '\n'),
-    paste(legend_order[2], ':', median(km_fit)[2])
-  )
-  return(list(plot = p1, message = msg))
-  }, error = function(e) {
-        cat("  ERROR:", e$message, "\n")
-        return(list(plot = NULL, message = e$message))
-      })
-}
-
-# Use the function for each gene 
+# create KM plots OS & PFS with corrected p-value for each gene 
+source("R_functions/plot_km_corrected.R")
 n_tests <- length(genes_of_interest[1:(length(genes_of_interest))])
 # Adapted from https://medium.com/@padraiglucey/generate-tabsets-in-a-for-loop-with-r-markdown-2d81349fb50b & https://stackoverflow.com/questions/42631642/creating-dynamic-tabs-in-rmarkdown
 for (gene in genes_of_interest[1:(length(genes_of_interest))]) {
@@ -989,7 +819,7 @@ Les deux scores d'EMT utilisés ici sont :<br/>
 ```{r calculs EMT scores}
 
 ## Hallmark
-tmp <- read.csv('/home/eugenie-modolo/Documents/Reference_files/HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION.v2025.1.Hs.tsv', sep="\t")
+tmp <- read.csv(Hallmark_EMT, sep="\t")
 list_genes_Hallmark <- unlist(strsplit(tmp[17,2], ","))
 list_genes_ssgsea <- list(list_genes_Hallmark, "")
 names(list_genes_ssgsea) <- c("EMT", "")
@@ -1016,7 +846,7 @@ p2 <- ggplot(coldata_control, aes(x=Hallmark_score)) +
 
 
 ## Mak
-tmp <- read.csv('/home/eugenie-modolo/Documents/Reference_files/EMT-MAK2015.csv', sep=";")
+tmp <- read.csv(Mak_EMT, sep=";")
 list_genes_M <- tmp[which(tmp$Type == 'M'), 'gene_name']
 list_genes_E <- tmp[which(tmp$Type == 'E'), 'gene_name']
 list_genes_Mak <- c(list_genes_M, list_genes_E)
@@ -1358,46 +1188,11 @@ coldata_control %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(
 
 ```{r boxplots EMT score Hallmark vs classification, results='asis', echo=FALSE}
 
-create_classif_boxplots <- function(classif, classif_col, df1, df2) {
-  p1 <- ggplot(df1, aes(x = .data[[classif_col]], y=Hallmark_score, fill=.data[[classif_col]])) + 
-  geom_boxplot(notch = TRUE) +
-  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
-  theme_bw()+ 
-  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
-  ggtitle(paste("Hallmark", classif, "LapNet")) 
-  
-  p2 <- ggplot(df2, aes(x = .data[[classif_col]], y=Hallmark_score, fill=.data[[classif_col]])) + 
-  geom_boxplot(notch = TRUE) +
-  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
-  theme_bw()+ 
-  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
-  ggtitle(paste("Hallmark", classif, "Nicolle"))
-  
-  p3 <- ggplot(df1, aes(x = .data[[classif_col]], y=Mak_score, fill=.data[[classif_col]])) + 
-  geom_boxplot(notch = TRUE) +
-  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
-  theme_bw()+ 
-  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
-  ggtitle(paste("Mak", classif, "LapNet"))
-  
-  p4 <- ggplot(df2, aes(x = .data[[classif_col]], y=Mak_score, fill=.data[[classif_col]])) + 
-  geom_boxplot(notch = TRUE) +
-  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
-  theme_bw()+ 
-  theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
-  ggtitle(paste("Mak", classif, "Nicolle"))
-  
-  grid.arrange(p1, p2, p3, p4, nrow = 2)
-}
-
+source("R_functions/create_classif_boxplots.R")
 for (classif in c('collisson', 'moffitt', 'bailey')) {
   cat("#### ", classif, " \n\n")
   classif_col <- paste0("Classif_", classif)
-  classif_df_control <- read.csv(paste0('/home/eugenie-modolo/Documents/Lapnet/donnees_control_LPAC/251009_', classif, '_classification.csv'), sep=",", header = TRUE, row.names = 1)
+  classif_df_control <- read.csv(paste0('data/Nicolle_251009_', classif, '_classification.csv'), sep=",", header = TRUE, row.names = 1)
   match_index <- match(rownames((coldata_control)), rownames(classif_df_control))
   coldata_control$toto <- classif_df_control[match_index, 'Predicted.subtype']
   names(coldata_control)[names(coldata_control) == 'toto'] <- classif_col
@@ -1509,7 +1304,7 @@ Méthode de calcul de pureté décrite dans le papier : Revkov et al. Communicat
 # coldata_lapnet$Purity_PUREE <- puree_scores[match(rownames(coldata_lapnet), puree_scores$Sample), "purity"]
 
 # Nicolle
-puree_scores <- read.table("/home/eugenie-modolo/Documents/Gynet/scripts/PUREE/puree_result_control.tsv", 
+puree_scores <- read.table("data/Nicolle_puree_result_control.tsv", 
                      header = TRUE, 
                      row.names = 1, 
                      sep = "\t",
@@ -1551,44 +1346,8 @@ Méthode de calcul de pureté décrite dans le papier : Yoshihara et al. Nature 
 
 
 ## reading the scores
-
-read_estimate_scores <- function(gct_file) {
-  
-  # Read GCT file (skip first 2 lines which are headers)
-  gct_data <- read.delim(gct_file, skip = 2, header = TRUE, row.names = 1)
-  
-  # The scores are typically in rows: StromalScore, ImmuneScore, ESTIMATEScore
-  # Transpose to get samples as rows
-  scores_df <- as.data.frame(t(gct_data[,which(colnames(gct_data) != "Description")]))
-  
-  # Clean up column names if needed
-  colnames(scores_df) <- gsub("\\.", "", colnames(scores_df))
-  
-  return(scores_df)
-}
-
-# Calculate tumor purity using the formula from the ESTIMATE paper: Purity = cos(0.6049872018 + 0.0001467884 * ESTIMATE score)
-calculate_tumor_purity <- function(estimate_scores) {
-  
-  # Extract ESTIMATE score column
-  if ("ESTIMATEScore" %in% colnames(estimate_scores)) {
-    estimate_score <- as.numeric(estimate_scores$ESTIMATEScore)
-  } else if ("ESTIMATE.score" %in% colnames(estimate_scores)) {
-    estimate_score <- as.numeric(estimate_scores$ESTIMATE.score)
-  } else {
-    # Find column with "ESTIMATE" in name
-    estimate_col <- grep("ESTIMATE", colnames(estimate_scores), ignore.case = TRUE, value = TRUE)[1]
-    estimate_score <- as.numeric(estimate_scores[[estimate_col]])
-  }
-  
-  # Calculate purity
-  purity <- cos(0.6049872018 + 0.0001467884 * estimate_score)
-  
-  # Add to dataframe
-  estimate_scores$TumorPurity <- purity
-  
-  return(estimate_scores)
-}
+source("R_functions/read_estimate_scores.R")
+source("R_functions/calculate_tumor_purity.R")
 
 # # LapNet (already in the charged coldata file)
 # estimate::filterCommonGenes(input.f = "/home/eugenie-modolo/Documents/Lapnet/scripts/Mehlen_LapNet/norm.count_pcg_genesymbol_K.tsv", output.f = "/home/eugenie-modolo/Documents/Lapnet/scripts/Mehlen_LapNet/norm.count_pcg_genesymbol_K.gct", id="GeneSymbol")

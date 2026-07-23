@@ -26,9 +26,12 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 #knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', fig.width = 5, fig.height = 4, out.width='100%', dpi = 150, cache = F)
 
-path <- "/home/eugenie-modolo/Documents/Lapnet/"
+path <- "/home/eugenie-modolo/Documents/Lapnet/scripts/Mehlen_LapNet/"
 # setwd(path)
 knitr::opts_knit$set(root.dir = path)
+
+# files not specific to this project
+gft_ref = "/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf"
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
@@ -135,7 +138,7 @@ Etudier les gènes différentiellement exprimés sur les données LapNet.<br/>
 ```{r creating dataframes}
 
 # colData
-coldata <- read.csv('./colData_LapNet.csv', sep=";")
+coldata <- read.csv('./data/colData_LapNet.csv', sep=";")
 coldata$Best_response_2 <- case_when(
   coldata$Best_response == "SD" ~ "SD_PD",
   coldata$Best_response == "PD" ~ "SD_PD", 
@@ -161,7 +164,7 @@ coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
 
 
 # countData (gene counts, not transcript's)
-counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+counts_genes <- read.table("./data/salmon.merged.gene_counts.tsv", 
                      header = TRUE, 
                      row.names = 1, 
                      sep = "\t",
@@ -172,7 +175,7 @@ counts_genes[count_columns] <- round(counts_genes[count_columns])
 #counts_genes <- as.matrix(counts_genes)
 
 # keeping only the protein-coding genes, as we used a protocol capturing only exons
-gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf')
+gtf <- import(gft_ref)
 gtf_df <- as.data.frame(gtf)
 gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
@@ -652,9 +655,9 @@ pathway <- pathway[order(pathway$stat, decreasing = T),]
 #   values = ensembl_ids,
 #   mart = ensembl
 # )
-# write.csv(corresp_Ensembl_Entrez, "./scripts/Mehlen_LapNet/prepost_EntrezID.csv", row.names = FALSE)
+# write.csv(corresp_Ensembl_Entrez, "./data/prepost_EntrezID.csv", row.names = FALSE)
 
-corresp_Ensembl_Entrez <- read.csv('./scripts/Mehlen_LapNet/prepost_EntrezID.csv', sep=",")
+corresp_Ensembl_Entrez <- read.csv('./data/prepost_EntrezID.csv', sep=",")
 # # there are no NA in the entrezgene_id column
 # sum(is.na(corresp_Ensembl_Entrez$entrezgene_id))
 # # there are duplicates: 577 for ensembl_gene_id_version and 1439 for entrezgene_id 
@@ -696,62 +699,8 @@ genesets <- list(msigdb.genes.setsH, msigdb.genes.setsC2, msigdb.genes.setsC5, m
 genesets_names <- c("H", "C2", "C5", "C2_reactome", "C2_KEGG")
 
 # using enricher from clusterProfiler 
-clustP_query <- function(genes, genesets, universe = NULL, adj_p_cutoff) { 
-  result <- list() 
-  if (is.vector(genes) && length(genes) > 0 && !all(genes == '')) 
-    { 
-    universe.gene.pathway <- universe 
-    other.genes <- universe.gene.pathway[!universe.gene.pathway %in% genesets$gene_symbol] 
-    other.genes <- na.omit(unique(other.genes)) 
-    other.genes.df <- cbind(rep("other.genes", length(other.genes)), other.genes) 
-    colnames(other.genes.df) <- colnames(genesets) 
-    genes.sets.all <- rbind(genesets, other.genes.df)
-
-    res <-
-      enricher(
-        genes,
-        universe = universe,
-        TERM2GENE = genes.sets.all,
-        qvalueCutoff = adj_p_cutoff,
-        maxGSSize=10000
-      )
-    result <- as.data.frame(res)
-  } else {
-    warning(paste0('genes must be a non-empty vector of gene names'))
-  }
-  return(result)
-}
-
-figures_ORA <- function(results, name_geneset, type_DEG) {
-  ## from: https://biostatsquid.com/pathway-enrichment-analysis-plots/
-  # Barplot
-  # Most common method to visualize enriched terms. Shows enrichment scores (e.g. p values) and gene count or ratio as bar height and color 
-  p1 <- barplot(results, showCategory = 12, 
-             title = paste("MSigDB", name_geneset, "Enrichment -", type_DEG, "regulated genes"))
-  p2 <- mutate(results, qscore = -log(p.adjust, base = 10)) %>% 
-  barplot(x = "qscore")
-  # Dotplot
-  # Dot plot is similar to bar plot with the capability to encode another score as dot size.
-  p3 <- enrichplot::dotplot(results, showCategory = 15)
-  # cnetplot
-  # Shows the linkages of genes and biological concepts (e.g. GO terms or KEGG pathways) as a network.
-  p4 <- cnetplot(results)
-  # Heatplot
-  # The heatplot is similar to cnetplot, while displaying the relationships as a heatmap. useful when there is a large number of significant terms
-  p5 <- heatplot(results, showCategory = 12)
-  # Treeplot
-  # The treeplot() function performs hierarchical clustering of enriched terms. 
-  enrichres2 <- enrichplot::pairwise_termsim(results) # calculate pairwise similarities of the enriched terms using Jaccard’s similarity index
-  p6 <- enrichplot::treeplot(enrichres2)
-  # Enrichment map 
-  # organizes enriched pathways into a network with edges connecting overlapping gene sets. In this way, mutually overlapping gene sets are tend to cluster together, making it easy to identify functional module.
-  p7 <- emapplot(enrichres2)
-  # Upsetplot
-  # alternative to cnetplot. emphasizes the gene overlapping among different gene sets.
-  p8 <- enrichplot::upsetplot(results)
-  
-  return(list(plot1 = p1, plot2 = p2, plot3 = p3, plot4 = p4, plot5 = p5, plot6 = p6, plot7 = p7, plot8 = p8))
-}
+source("R_functions/clustP_query.R")
+source("R_functions/figures_ORA.R")
 
 universe <- as.character(pathway$ENSG_clean) 
 DEGs_up <- table_DEGs[which(table_DEGs$log2FoldChange >0),'ENSG_clean']
@@ -908,12 +857,7 @@ ggplot(gseaKEGG_results, aes(x = enrichmentScore, y = reorder(Description, -p.ad
      scale_color_gradient(low="blue", high="red") +
      theme_bw()
 ## Output images for all significant KEGG pathways
-get_kegg_plots <- function(x) {
-   gseaplot(gseaKEGG, geneSetID = gseaKEGG_results$ID[x], title = gseaKEGG_results$Description[x])
-   pathview(gene.data = stats, pathway.id = gseaKEGG_results$ID[x], species = "hsa", 
-       limit = list(gene = 2, cpd = 1))
-   knitr::include_graphics(paste0(gseaKEGG_results$ID[x], ".png"))
-}
+source("R_functions/get_kegg_plots.R")
 # get_kegg_plots(1)
 # purrr::map(1:length(gseaKEGG_results$ID), get_kegg_plots)
 
