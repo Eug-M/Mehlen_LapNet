@@ -111,7 +111,7 @@ library(msigdbr)
 library("reshape2")
 library("tidyr")
 library("splines")
-library("ComplexHeatmap")
+library("ComplexHeatmap") # https://jokergoo.github.io/ComplexHeatmap-reference/book/a-single-heatmap.html
 library(circlize)
 library(viridis)
 library(conflicted)

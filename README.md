@@ -29,7 +29,7 @@ In addition, regarding the samples that had a low QC, I checked the number of ge
 
 
 
-## Sub-project 2: bulk & single-cell RNA-Seq data from external studies [work in progress]
+## Sub-project 2: bulk & single-cell RNA-Seq data from external studies [unfinished work]
 
 The files look into the data from two studies on the effect of Daraxonrasib (or RMC-6236, KRAS inhibitor), on the gene expression of human or mouse cancerous samples treated by Daraxonrasib.
 
