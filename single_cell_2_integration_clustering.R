@@ -35,7 +35,7 @@ library(future)
 options(future.globals.maxSize = 20 * 1024^3)  # Increase to 20GB for large datasets
 
 # Set working directory (adjust to your path)
-setwd("/home/eugenie-modolo/Documents/Lapnet/donnees_KRAS/GSE303105_RAW/single_cell_integration_analysis")
+setwd("/home/eugenie-modolo/Documents/Gloriana/single_cell_integration_analysis")
 
 # Create output directories
 dir.create("plots", showWarnings = FALSE)
@@ -52,7 +52,7 @@ theme_set(theme_classic(base_size = 12))
 
 cat("Environment setup complete\n")
 cat("Seurat version:", as.character(packageVersion("Seurat")), "\n")
-# Seurat version: 5.3.1
+# Seurat version: 5.5.0
 
 
 
@@ -63,19 +63,19 @@ cat("Seurat version:", as.character(packageVersion("Seurat")), "\n")
 # Define sample metadata
 sample_metadata <- data.frame(
   sample_id = c(
-    "Control", "RMC6236"
+    "S101", "S102", "S105", "S109", "S201", "S202", "S205", "S211"
   ),
   condition = c(
-    "Control", "RMC6236"
+    "Control", "Control", "Control", "Control", "NP137", "NP137", "NP137", "NP137"
   ),
   patient_id = c(
-    "Mouse_Control", "Mouse_RMC6236"
+    "Mouse_Control", "Mouse_Control", "Mouse_Control", "Mouse_Control", "Mouse_NP137", "Mouse_NP137", "Mouse_NP137", "Mouse_NP137"
   ),
   stringsAsFactors = FALSE
 )
 
 # Load QC-filtered Seurat objects
-qc_data_path <- "/home/eugenie-modolo/Documents/Lapnet/donnees_KRAS/GSE303105_RAW/single_cell_QC_analysis/filtered_data"
+qc_data_path <- "/home/eugenie-modolo/Documents/Gloriana/single_cell_QC_analysis/filtered_data"
 
 seurat_list <- lapply(sample_metadata$sample_id, function(sample_id) {
   obj <- readRDS(file.path(qc_data_path, paste0(sample_id, "_qc_filtered.rds")))
@@ -111,8 +111,14 @@ for (sample_id in names(seurat_list)) {
 cat("\nTotal cells across all samples:", 
     sum(sapply(seurat_list, ncol)), "\n")
 
-#   Control: 7933 cells × 16979 genes
-#   RMC6236: 5943 cells × 16979 genes
+# S101: 14349 cells × 14249 genes
+# S102: 10568 cells × 14249 genes
+# S105: 13474 cells × 14249 genes
+# S109: 10414 cells × 14249 genes
+# S201: 14111 cells × 14249 genes
+# S202: 15548 cells × 14249 genes
+# S205: 15436 cells × 14249 genes
+# S211: 18370 cells × 14249 genes
 
 
 
@@ -125,11 +131,11 @@ merged_naive <- merge(
   x = seurat_list[[1]],
   y = seurat_list[-1],
   add.cell.ids = names(seurat_list),
-  project = "KRAS_Naive_Merge"
+  project = "Gloriana_Naive_Merge"
 )
 
 cat("Merged dataset:", ncol(merged_naive), "cells ×", nrow(merged_naive), "genes\n")
-# Merged dataset: 13876 cells × 16979 genes
+# Merged dataset:  cells ×  genes
 
 # Standard Seurat workflow
 merged_naive <- NormalizeData(merged_naive, verbose = FALSE)
@@ -141,7 +147,7 @@ merged_naive <- FindNeighbors(merged_naive, dims = 1:30, verbose = FALSE)
 merged_naive <- FindClusters(merged_naive, resolution = 0.6, verbose = FALSE)
 
 cat("Clustering complete:", length(unique(merged_naive$seurat_clusters)), "clusters identified\n")
-# Clustering complete: 19 clusters identified
+# Clustering complete: 30 clusters identified
 
 
 
@@ -152,38 +158,38 @@ cat("Clustering complete:", length(unique(merged_naive$seurat_clusters)), "clust
 # Define color palettes for visualization
 # n samples need n distinct, visible colors
 sample_colors <- c(
-  "#377EB8",   # Control: Blue
-  "#984EA3"    # RMC6236: Purple
+  "#E41A1C", "#377EB8", "#4DAF4A", "#984EA3",  # Control 1-4: Red, Blue, Green, Purple
+  "#FF7F00", "#A65628", "#F781BF", "#999999"   # NP137 1-4: Orange, Brown, Pink, Gray
 )
 names(sample_colors) <- sample_metadata$sample_id
 
 # 2 conditions need 2 distinct colors
 condition_colors <- c(
   "Control" = "#4DAF4A",       # Green
-  "RMC6236" = "#F18F01"       # Orange
+  "NP137" = "#F18F01"       # Orange
 )
 
 # UMAP colored by sample - shows batch effects
 p1_naive <- DimPlot(merged_naive, reduction = "umap", group.by = "sample_id", 
-                    pt.size = 0.05, cols = sample_colors) +
+                    pt.size = 0.05, cols = sample_colors, raster=FALSE) +
   ggtitle("Naive Merge: Colored by Sample") +
   theme(legend.position = "right", legend.text = element_text(size = 8))
 
 # UMAP colored by condition
 p2_naive <- DimPlot(merged_naive, reduction = "umap", group.by = "condition",
-                    pt.size = 0.05, cols = condition_colors) +
+                    pt.size = 0.05, cols = condition_colors, raster=FALSE) +
   ggtitle("Naive Merge: Colored by Condition")
 
 # UMAP colored by clusters
 p3_naive <- DimPlot(merged_naive, reduction = "umap", group.by = "seurat_clusters",
-                    pt.size = 0.05, label = TRUE, label.size = 5) +
+                    pt.size = 0.05, label = TRUE, label.size = 5, raster=FALSE) +
   ggtitle("Naive Merge: Clusters") +
   NoLegend()
 
 # Split by sample to see separation
 p4_naive <- DimPlot(merged_naive, reduction = "umap", group.by = "condition",
                     split.by = "sample_id", pt.size = 0.05, ncol = 4, 
-                    cols = condition_colors) +
+                    cols = condition_colors, raster=FALSE) +
   ggtitle("Naive Merge: Split by Sample") +
   theme(strip.text = element_text(size = 9, face = "bold"))
 
@@ -209,7 +215,7 @@ n_batch_clusters <- sum(dominant_sample_clusters)
 cat("\nBatch effect assessment:\n")
 cat("  Clusters dominated by single sample (>50%):", n_batch_clusters, 
     "/", nrow(cluster_composition), "\n")
-# Clusters dominated by single sample (>50%): 21 / 21
+# Clusters dominated by single sample (>50%): 1 / 30
 
 if (n_batch_clusters > 0) {
   cat("  ⚠  Naive merge shows significant batch effects\n")
@@ -228,7 +234,7 @@ merged_seurat <- merge(
   x = seurat_list[[1]],
   y = seurat_list[-1],
   add.cell.ids = names(seurat_list),
-  project = "KRAS_Integration"
+  project = "Gloriana_Integration"
 )
 
 # Add all metadata
@@ -261,7 +267,6 @@ merged_seurat <- RunPCA(merged_seurat, npcs = 50, verbose = FALSE)
 
 cat("Data prepared for integration\n")
 cat("Layers:", length(Layers(merged_seurat, search = "data")), "samples\n")
-# Layers: 2 samples
 
 
 
@@ -286,7 +291,7 @@ integrated_cca <- RunUMAP(integrated_cca, reduction = "integrated.cca", dims = 1
                           reduction.name = "umap.cca", verbose = FALSE)
 
 cat("CCA integration complete:", length(unique(integrated_cca$seurat_clusters)), "clusters\n")
-# CCA integration complete: 19 clusters
+# CCA integration complete: 34 clusters
 
 
 
@@ -294,6 +299,8 @@ cat("CCA integration complete:", length(unique(integrated_cca$seurat_clusters)),
 # STEP 8: RPCA Integration (Method 2)
 #-----------------------------------------------
 
+options(future.globals.maxSize = 30e9) # default limit is 20.00 GiB, The total size of the 10 globals 
+# exported for future expression (‘FUN()’) is 25.57 GiB
 # Integrate using RPCA
 integrated_rpca <- IntegrateLayers(
   object = merged_seurat,
@@ -311,7 +318,7 @@ integrated_rpca <- RunUMAP(integrated_rpca, reduction = "integrated.rpca", dims 
                            reduction.name = "umap.rpca", verbose = FALSE)
 
 cat("RPCA integration complete:", length(unique(integrated_rpca$seurat_clusters)), "clusters\n")
-# RPCA integration complete: 20 clusters
+# RPCA integration complete: 35 clusters
 
 
 
@@ -334,7 +341,7 @@ integrated_harmony <- RunUMAP(integrated_harmony, reduction = "harmony", dims = 
                               reduction.name = "umap.harmony", verbose = FALSE)
 
 cat("Harmony integration complete:", length(unique(integrated_harmony$seurat_clusters)), "clusters\n")
-# Harmony integration complete: 19 clusters
+# Harmony integration complete: 28 clusters
 
 
 
@@ -359,7 +366,7 @@ integrated_fastmnn <- RunUMAP(integrated_fastmnn, reduction = "integrated.mnn", 
                               reduction.name = "umap.mnn", verbose = FALSE)
 
 cat("Clustering complete:", length(unique(integrated_fastmnn$seurat_clusters)), "clusters\n")
-# FastMNN integration complete: 19 clusters
+# FastMNN integration complete: 26 clusters
 
 
 
@@ -381,7 +388,7 @@ cat("\n=== Generating Comparison Plots ===\n")
 
 # Create a function to make standardized UMAP plots
 make_comparison_plot <- function(seurat_obj, reduction_name, title, group_by = "sample_id", colors = NULL) {
-  p <- DimPlot(seurat_obj, reduction = reduction_name, group.by = group_by, pt.size = 0.05) +
+  p <- DimPlot(seurat_obj, reduction = reduction_name, group.by = group_by, pt.size = 0.05, raster=FALSE) +
     ggtitle(title) +
     theme(plot.title = element_text(face = "bold", size = 12),
           legend.text = element_text(size = 7),
@@ -400,37 +407,45 @@ p_sample_naive <- make_comparison_plot(merged_naive, "umap", "Naive Merge",
                                        colors = sample_colors)
 p_sample_cca <- make_comparison_plot(integrated_cca, "umap.cca", "CCA", 
                                      colors = sample_colors)
-p_sample_rpca <- make_comparison_plot(integrated_rpca, "umap.rpca", "RPCA", 
-                                      colors = sample_colors)
-p_sample_harmony <- make_comparison_plot(integrated_harmony, "umap.harmony", "Harmony", 
-                                         colors = sample_colors)
+# p_sample_rpca <- make_comparison_plot(integrated_rpca, "umap.rpca", "RPCA", 
+#                                       colors = sample_colors)
+# p_sample_harmony <- make_comparison_plot(integrated_harmony, "umap.harmony", "Harmony", 
+#                                          colors = sample_colors)
 p_sample_mnn <- make_comparison_plot(integrated_fastmnn, "umap.mnn", "FastMNN", 
                                      colors = sample_colors)
 
 # Combine sample-colored UMAPs
-combined_samples <- (p_sample_naive | p_sample_cca | p_sample_rpca) / 
-  (p_sample_harmony | p_sample_mnn | plot_spacer())
+# combined_samples <- (p_sample_naive | p_sample_cca | p_sample_rpca) / 
+#   (p_sample_harmony | p_sample_mnn | plot_spacer())
+# combined_samples <- (p_sample_naive | p_sample_rpca) / 
+#   (p_sample_harmony | plot_spacer())
+combined_samples <- (p_sample_naive | p_sample_cca) / 
+  (p_sample_mnn | plot_spacer())
 
-ggsave("plots/integration_comparison/02_integration_by_sample.png", 
+ggsave("plots/integration_comparison/02_integration_by_sample_2.png", 
        combined_samples, width = 16, height = 12, dpi = 300)
 
 # UMAPs colored by condition (assesses biological preservation)
 p_cond_naive <- make_comparison_plot(merged_naive, "umap", "Naive Merge", "condition", 
                                      colors = condition_colors)
-p_cond_cca <- make_comparison_plot(integrated_cca, "umap.cca", "CCA", "condition", 
+p_cond_cca <- make_comparison_plot(integrated_cca, "umap.cca", "CCA", "condition",
                                    colors = condition_colors)
-p_cond_rpca <- make_comparison_plot(integrated_rpca, "umap.rpca", "RPCA", "condition", 
-                                    colors = condition_colors)
-p_cond_harmony <- make_comparison_plot(integrated_harmony, "umap.harmony", "Harmony", "condition", 
-                                       colors = condition_colors)
-p_cond_mnn <- make_comparison_plot(integrated_fastmnn, "umap.mnn", "FastMNN", "condition", 
+# p_cond_rpca <- make_comparison_plot(integrated_rpca, "umap.rpca", "RPCA", "condition", 
+#                                     colors = condition_colors)
+# p_cond_harmony <- make_comparison_plot(integrated_harmony, "umap.harmony", "Harmony", "condition", 
+#                                        colors = condition_colors)
+p_cond_mnn <- make_comparison_plot(integrated_fastmnn, "umap.mnn", "FastMNN", "condition",
                                    colors = condition_colors)
 
 # Combine condition-colored UMAPs
-combined_conditions <- (p_cond_naive | p_cond_cca | p_cond_rpca) /
-  (p_cond_harmony | p_cond_mnn | plot_spacer())
+# combined_conditions <- (p_cond_naive | p_cond_cca | p_cond_rpca) /
+#   (p_cond_harmony | p_cond_mnn | plot_spacer())
+# combined_conditions <- (p_cond_naive | p_cond_rpca) /
+#   (p_cond_harmony | plot_spacer())
+combined_conditions <- (p_cond_naive | p_cond_cca) /
+  (p_cond_mnn | plot_spacer())
 
-ggsave("plots/integration_comparison/03_integration_by_condition.png",
+ggsave("plots/integration_comparison/03_integration_by_condition_2.png",
        combined_conditions, width = 16, height = 12, dpi = 300)
 
 
@@ -465,8 +480,8 @@ calculate_mixing_metric <- function(seurat_obj, group_by = "sample_id", reductio
 methods_list <- list(
   "Naive" = list(obj = merged_naive, reduction = "umap"),
   "CCA" = list(obj = integrated_cca, reduction = "umap.cca"),
-  "RPCA" = list(obj = integrated_rpca, reduction = "umap.rpca"),
-  "Harmony" = list(obj = integrated_harmony, reduction = "umap.harmony"),
+  # "RPCA" = list(obj = integrated_rpca, reduction = "umap.rpca"),
+  # "Harmony" = list(obj = integrated_harmony, reduction = "umap.harmony")
   "FastMNN" = list(obj = integrated_fastmnn, reduction = "umap.mnn")
 )
 
@@ -487,7 +502,7 @@ cat("(Higher mixing score = better sample mixing)\n\n")
 print(mixing_results)
 
 # Save metrics
-write.csv(mixing_results, "metadata/integration_comparison_metrics.csv", row.names = FALSE)
+write.csv(mixing_results, "metadata/integration_comparison_metrics_2.csv", row.names = FALSE)
 
 # Visualize mixing scores
 p_mixing <- ggplot(mixing_results, aes(x = reorder(method, -mixing_score), y = mixing_score, fill = method)) +
@@ -500,7 +515,7 @@ p_mixing <- ggplot(mixing_results, aes(x = reorder(method, -mixing_score), y = m
   theme(legend.position = "none") +
   scale_fill_brewer(palette = "Set2")
 
-ggsave("plots/integration_comparison/04_mixing_scores.png", p_mixing, 
+ggsave("plots/integration_comparison/04_mixing_scores_2.png", p_mixing, 
        width = 10, height = 6, dpi = 300)
 
 
@@ -554,7 +569,7 @@ p_tradeoff <- ggplot(mixing_results, aes(x = mixing_score, y = condition_separat
   theme(legend.position = "none") +
   scale_color_brewer(palette = "Set2")
 
-ggsave("plots/integration_comparison/05_mixing_vs_preservation.png", p_tradeoff,
+ggsave("plots/integration_comparison/05_mixing_vs_preservation_2.png", p_tradeoff,
        width = 10, height = 7, dpi = 300)
 
 
@@ -601,7 +616,7 @@ if (best_method == "Harmony") {
 }
 
 cat("\nUsing", best_method, "for downstream clustering analysis\n")
-# Using Harmony for downstream clustering analysis
+# Using CCA for downstream clustering analysis
 
 
 
@@ -617,7 +632,7 @@ cat("\nUsing", best_method, "for downstream clustering analysis\n")
 # Test multiple resolutions systematically, Evaluate biological interpretability at each resolution
 
 # Test multiple resolutions
-resolutions <- c(0.4, 0.6, 0.8, 1.0)
+resolutions <- c(0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.2, 1.5)
 
 for (res in resolutions) {
   integrated_final <- FindClusters(
@@ -650,13 +665,14 @@ plot_list <- lapply(resolutions, function(res) {
           group.by = cluster_col,
           label = TRUE,
           label.size = 4,
-          pt.size = 0.3) +
+          pt.size = 0.3,
+          raster=FALSE) +
     ggtitle(paste0("Resolution ", res, " (", n_clusters, " clusters)")) +
     NoLegend()
 })
 
 # Combine plots
-combined_resolutions <- wrap_plots(plot_list, ncol = 2)
+combined_resolutions <- wrap_plots(plot_list, ncol = 3)
 ggsave("plots/clustering/06_multi_resolution_clustering.png", 
        combined_resolutions, width = 14, height = 14, dpi = 300)
 
@@ -730,12 +746,28 @@ resolution_comparison <- data.frame(
 
 cat("\nClustering resolution comparison:\n")
 print(resolution_comparison)
-
+# CCA:
 # resolution n_clusters silhouette_score
-# 1        0.4         17        0.1387645
-# 2        0.6         19        0.1497052
-# 3        0.8         20        0.1488567
-# 4        1.0         22        0.1522786
+# 1        0.3         23        0.4195944
+# 2        0.4         25        0.4099973
+# 3        0.5         31        0.3483332
+# 4        0.6         34        0.3602247
+# 5        0.8         41        0.3231129
+# 6        1.0         46        0.2901770
+# 7        1.2         49        0.2631224
+# 8        1.5         54        0.2427841
+
+# Harmony:
+# resolution n_clusters silhouette_score
+# 1        0.3         21        0.3994004
+# 2        0.4         24        0.3996888
+# 3        0.5         25        0.3688509
+# 4        0.6         28        0.3531383
+# 5        0.8         34        0.3028285
+# 6        1.0         37        0.2753757
+# 7        1.2         42        0.2555564
+# 8        1.5         44        0.2234957
+
 
 # Interpretation:
 # High score (~0.5-0.7): Clusters are well-separated, cells clearly belong to their clusters 
@@ -750,7 +782,7 @@ optimal_resolution <- resolution_comparison$resolution[optimal_idx]
 cat("\nRecommended resolution:", optimal_resolution, 
     "(", resolution_comparison$n_clusters[optimal_idx], "clusters )\n")
 
-# Recommended resolution: 1 ( 22 clusters )
+# Recommended resolution: 0.3 ( 23 clusters )
 
 # Set the optimal clustering as the default
 integrated_final$seurat_clusters <- integrated_final@meta.data[[paste0("clusters_res_", optimal_resolution)]]
@@ -776,6 +808,8 @@ if (length(small_clusters) > 0) {
   print(cluster_sizes[small_clusters])
   cat("   These may represent rare cell types or over-clustering\n")
 }
+#  20  21  22 
+# 742 214  36 
 
 # Check sample distribution across clusters
 sample_cluster_table <- table(integrated_final$seurat_clusters, integrated_final$sample_id)
@@ -826,7 +860,7 @@ p_condition_dist <- ggplot(condition_dist_long, aes(x = cluster, y = percentage,
        x = "Cluster", y = "Percentage of Cells") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   scale_fill_manual(values = c("Control" = "#2E86AB", 
-                               "RMC6236" = "#F18F01"))
+                               "NP137" = "#F18F01"))
 
 ggsave("plots/clustering/09_condition_distribution_clusters.png", p_condition_dist,
        width = 12, height = 6, dpi = 300)
@@ -843,7 +877,8 @@ p_final_clusters <- DimPlot(integrated_final,
                             group.by = "seurat_clusters",
                             label = TRUE,
                             label.size = 5,
-                            pt.size = 0.05) +
+                            pt.size = 0.05,
+                            raster=FALSE) +
   ggtitle(paste0("Final Clustering (", best_method, " Integration)")) +
   theme(plot.title = element_text(face = "bold", size = 14))
 
@@ -855,7 +890,8 @@ p_by_condition <- DimPlot(integrated_final,
                           label = TRUE,
                           label.size = 4,
                           pt.size = 0.05,
-                          ncol = 2) +
+                          ncol = 2,
+                          raster=FALSE) +
   ggtitle("Clusters by Treatment Condition") +
   theme(strip.text = element_text(face = "bold"))
 
@@ -864,7 +900,8 @@ p_by_sample <- DimPlot(integrated_final,
                        reduction = reduction_final,
                        group.by = "sample_id",
                        pt.size = 0.05,
-                       cols = sample_colors) +
+                       cols = sample_colors,
+                       raster=FALSE) +
   ggtitle("Sample Mixing (Integration Quality)") +
   theme(legend.text = element_text(size = 7))
 
@@ -873,7 +910,8 @@ p_by_condition_single <- DimPlot(integrated_final,
                                  reduction = reduction_final,
                                  group.by = "condition",
                                  pt.size = 0.05,
-                                 cols = condition_colors) +
+                                 cols = condition_colors,
+                                 raster=FALSE) +
   ggtitle("Treatment Conditions")
 
 # Combine final visualizations

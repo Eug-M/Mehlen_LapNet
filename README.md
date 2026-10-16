@@ -29,11 +29,11 @@ In addition, regarding the samples that had a low QC, I checked the number of ge
 
 
 
-## Sub-project 2: bulk & single-cell RNA-Seq data from external studies [unfinished work]
+## Sub-project 2: bulk & single-cell RNA-Seq data from external studies
 
 The files look into the data from two studies on the effect of Daraxonrasib (or RMC-6236, KRAS inhibitor), on the gene expression of human or mouse cancerous samples treated by Daraxonrasib.
 
 - rapport_LapNet_postDaraxonrasib.Rmd: study the Netrin-1 expression, as well as it main receptors, on bulk RNA-Seq sequencing of 2 human and 2 mouse cell lines. Data from [Differential mRNA expression analysis of multiple human and mouse pancreatic cancer cells and tumors after DMSO, tazemetostat, RMC-6236, or the combination treatment](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE315130).
 
-- single_cell_*.R: study the Netrin-1 expression, as well as it main receptors, on RNA-Seq sequencing of 2 mouse single-cell samples (1 that received the treatment and 1 that did not). The different files are the various steps to process single-cell data. Data from [Prolonged KRAS-MAPK Inhibition Induces Interferon-mediated Epithelial-to-Mesenchymal Transition and Reveals Therapeutic Opportunities](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE303105).
+- single_cell_*.R: study the Netrin-1 expression, as well as it main receptors, on RNA-Seq sequencing of 8 mouse single-cell samples (4 that received the treatment and 4 that did not). The different files are the various steps to process single-cell data. Data unpublished for now.
 

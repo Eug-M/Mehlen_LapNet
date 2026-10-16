@@ -37,7 +37,7 @@ library(scales)
 library(viridis)
 
 # Set working directory
-setwd("/home/eugenie-modolo/Documents/Lapnet/donnees_KRAS/GSE303105_RAW/cell_type_annotation")
+setwd("/home/eugenie-modolo/Documents/Gloriana/cell_type_annotation")
 
 # Create output directories
 dir.create("plots", showWarnings = FALSE)
@@ -59,7 +59,7 @@ theme_set(theme_classic(base_size = 12))
 #-----------------------------------------------
 
 # Path to integrated Seurat object from previous step
-integrated_path <- "/home/eugenie-modolo/Documents/Lapnet/donnees_KRAS/GSE303105_RAW/single_cell_integration_analysis/integrated_data/integrated_clustered_seurat.rds"
+integrated_path <- "/home/eugenie-modolo/Documents/Gloriana/single_cell_integration_analysis/integrated_data/integrated_clustered_seurat.rds"
 
 # Load the object
 integrated_seurat <- readRDS(integrated_path)
@@ -87,20 +87,20 @@ if ("umap.harmony" %in% available_reductions) {
 # Create multi-panel overview
 p1 <- DimPlot(integrated_seurat, reduction = umap_reduction,
               group.by = "seurat_clusters", label = TRUE, label.size = 5,
-              pt.size = 0.1) +
+              pt.size = 0.1, raster=FALSE) +
   ggtitle("Clusters (Pre-Annotation)") +
   theme(plot.title = element_text(face = "bold", size = 14))
 
 p2 <- DimPlot(integrated_seurat, reduction = umap_reduction,
-              group.by = "sample_id", pt.size = 0.1) +
+              group.by = "sample_id", pt.size = 0.1, raster=FALSE) +
   ggtitle("Samples") +
   theme(legend.text = element_text(size = 7))
 
 p3 <- DimPlot(integrated_seurat, reduction = umap_reduction,
-              group.by = "condition", pt.size = 0.1) +
+              group.by = "condition", pt.size = 0.1, raster=FALSE) +
   ggtitle("Condition") +
   scale_color_manual(values = c("Control" = "#2E86AB", 
-                                "RMC6236" = "#F18F01"))
+                                "NP137" = "#F18F01"))
 
 # Combine
 p_overview <- (p1 | p2) / (p3 | plot_spacer())
@@ -154,7 +154,11 @@ canonical_markers <- list(
   "Non_Classical_Mono" = c("Fcgr4", "Ms4a7"),
   # "Dendritic_cells" = c("Fcer1a", "Cst3"),
   # "Plasmacytoid_DC" = c("Il3ra", "Gzmb", "Serpinf1"),
-  "Platelets" = c("Ppbp", "Pf4", "Gp9")
+  "Platelets" = c("Ppbp", "Pf4", "Gp9"),
+  "Mesenchymal" = c("Vim"),
+  "Alveolar Fibroblast" = c("Pdgfra", "Npnt", "Ces1d", "Tcf21", "Scube2"),
+  "Lipofibroblast" = c("Plin2", "Tcf21"),
+  "Myofibroblast" = c("Acta2", "Postn", "Cthrc1", "Mmp11", "Col1a1", "Col3a1")
 )
 
 # Check which markers are present in dataset
@@ -192,9 +196,9 @@ plot_violin_markers <- function(markers, cell_type_name, filename_suffix) {
   
   p <- VlnPlot(integrated_seurat,
                features = present_markers,
-               group.by = "seurat_clusters",
+               group.by = "seurat_clusters", split.by = "condition",
                pt.size = 0,
-               ncol = 3) &
+               ncol = 3, raster=FALSE) &
     theme(legend.position = "none",
           axis.text.x = element_text(angle = 0, hjust = 0.5, size = 8),
           axis.title.x = element_blank(),
@@ -221,7 +225,7 @@ plot_umap_markers <- function(markers, cell_type_name, filename_suffix) {
                    features = present_markers,
                    reduction = umap_reduction,
                    ncol = 4,
-                   pt.size = 0.1) &
+                   pt.size = 0.1, raster=FALSE) &
     theme(plot.title = element_text(size = 10),
           axis.text = element_blank(),
           axis.ticks = element_blank(),
@@ -285,7 +289,7 @@ cluster_markers_filtered <- cluster_markers %>%
 top_markers <- cluster_markers_filtered %>%
   group_by(cluster) %>%
   top_n(n = 5, wt = avg_log2FC) %>%
-  arrange(cluster, desc(avg_log2FC))
+  arrange(cluster, dplyr::desc(avg_log2FC))
 
 cat("\nTop 5 markers per cluster:\n")
 print(top_markers %>% dplyr::select(cluster, gene, avg_log2FC, pct.1, pct.2))
@@ -320,32 +324,31 @@ ggsave("plots/manual_annotation/06_heatmap_top_markers.png", p_heatmap,
 # STEP 8: Manual cell type assignment
 #-----------------------------------------------
 
-# /!\ à ajouter : étape inferCNV pour les clusters tumoraux
-
 # MAPPING - CUSTOMIZED using the figures from Step 7
 cluster_to_celltype <- c(
-  "0" = "B cells",
-  "1" = "T cells",
-  "2" = "T cells",
-  "3" = "monocytes",
-  "4" = "T cells",
-  "5" = "B cells",
-  "6" = "cancer cells",
-  "7" = "cancer cells",
-  "8" = "monocytes",
+  "0" = "endothelium",
+  "1" = "epithelial",
+  "2" = "epithelial",
+  "3" = "lung activated fibroblast",
+  "4" = "epithelial",
+  "5" = "immune",
+  "6" = "lung alveolar fibroblast",
+  "7" = "B cells",
+  "8" = "epithelial",
   "9" = "T cells",
-  "10" = "epithelial cells",
-  "11" = "B cells",
-  "12" = "T cells",
-  "13" = "T cells",
-  "14" = "monocytes",
-  "15" = "epithelial cells",
-  "16" = "T cells",
-  "17" = "monocytes",
-  "18" = "cancer cells",
-  "19" = "lymphocytes",
-  "20" = "immune cells",
-  "21" = "B cells"
+  "10" = "monocyte",
+  "11" = "endothelium",
+  "12" = "epithelial",
+  "13" = "endothelium",
+  "14" = "immune",
+  "15" = "epithelial",
+  "16" = "endothelium",
+  "17" = "lung activated fibroblast & pericyte",
+  "18" = "immune",
+  "19" = "immune",
+  "20" = "immune",
+  "21" = "epithelial",
+  "22" = "endothelium"
 )
 
 # Apply to all cells
@@ -360,7 +363,8 @@ p_manual <- DimPlot(
   label = TRUE,
   label.size = 4,
   pt.size = 0.1,
-  repel = TRUE
+  repel = TRUE,
+  raster=FALSE
 ) +
   ggtitle("Manual Cell Type Annotation") +
   theme(plot.title = element_text(face = "bold", size = 14))
@@ -375,7 +379,8 @@ p_manual_split <- DimPlot(
   group.by = "manual_annotation",
   split.by = "condition",
   pt.size = 0.1,
-  ncol = 2
+  ncol = 2,
+  raster=FALSE
 ) +
   ggtitle("Manual Annotation by Condition")
 
@@ -403,42 +408,17 @@ singler_mouse <- SingleR(
 
 integrated_seurat$singler_mouse <- singler_mouse$labels
 
-# Reference 2: MonacoImmuneData (Immune-Specific)
-monaco_ref <- celldex::MonacoImmuneData()
+# Reference 2: Immgen (Mouse microarray)
+immgen_ref <- celldex::ImmGenData()
 
-singler_monaco <- SingleR(
+singler_immgen <- SingleR(
   test = sce,
-  ref = monaco_ref,
-  labels = monaco_ref$label.main,
+  ref = immgen_ref,
+  labels = immgen_ref$label.main,
   assay.type.test = "logcounts"
 )
 
-integrated_seurat$singler_monaco <- singler_monaco$labels
-
-# Reference 3: DatabaseImmuneCellExpression
-dice_ref <- celldex::DatabaseImmuneCellExpressionData()
-
-singler_dice <- SingleR(
-  test = sce,
-  ref = dice_ref,
-  labels = dice_ref$label.main,
-  assay.type.test = "logcounts"
-)
-
-integrated_seurat$singler_dice <- singler_dice$labels
-
-# Reference 4: BlueprintEncodeData
-bed_ref <- celldex::BlueprintEncodeData()
-
-singler_bed <- SingleR(
-  test = sce,
-  ref = bed_ref,
-  labels = bed_ref$label.main,
-  assay.type.test = "logcounts"
-)
-
-integrated_seurat$singler_bed <- singler_bed$labels
-
+integrated_seurat$singler_immgen <- singler_immgen$labels
 
 
 #-----------------------------------------------
@@ -447,36 +427,26 @@ integrated_seurat$singler_bed <- singler_bed$labels
 
 # Visualize all three references
 p_mouse <- DimPlot(integrated_seurat, reduction = umap_reduction,
-                  group.by = "singler_mouse", pt.size = 0.1) +
-  labs(title = "Mouse Reference") +
+                  group.by = "singler_mouse", pt.size = 0.1, raster=FALSE) +
+  labs(title = "Mouse RNASeq") +
   theme(legend.text = element_text(size = 7))
 
-p_monaco <- DimPlot(integrated_seurat, reduction = umap_reduction,
-                    group.by = "singler_monaco", pt.size = 0.1) +
-  labs(title = "Human Monaco Reference") +
-  theme(legend.text = element_text(size = 7))
-# 
-# p_dice <- DimPlot(integrated_seurat, reduction = umap_reduction,
-#                   group.by = "singler_dice", pt.size = 0.1) +
-#   labs(title = "DICE Reference") +
-#   theme(legend.text = element_text(size = 7))
-
-p_bed <- DimPlot(integrated_seurat, reduction = umap_reduction,
-                  group.by = "singler_bed", pt.size = 0.1) +
-  labs(title = "Human BED Reference") +
+p_immgen <- DimPlot(integrated_seurat, reduction = umap_reduction,
+                    group.by = "singler_immgen", pt.size = 0.1, raster=FALSE) +
+  labs(title = "Mouse microarray") +
   theme(legend.text = element_text(size = 7))
 
 p_manual_ref <- DimPlot(integrated_seurat, reduction = umap_reduction,
-                        group.by = "manual_annotation", pt.size = 0.1) +
+                        group.by = "manual_annotation", pt.size = 0.1, raster=FALSE) +
   labs(title = "Manual") +
   theme(legend.text = element_text(size = 7))
 
-p_ref_comparison <- (p_manual_ref | p_mouse) / (p_monaco | p_bed)
+p_ref_comparison <- (p_manual_ref | p_mouse) / (p_immgen)
 
 ggsave("plots/automated_annotation/10_singler_reference_comparison.png",
        p_ref_comparison, width = 16, height = 12, dpi = 300)
 
-# Choosing the annotation
+# Choosing the annotation /!\ à adapter !
 integrated_seurat$singler_annotation <- integrated_seurat$singler_mouse
 
 # Visualize chosen reference
@@ -487,9 +457,10 @@ p_singler_final <- DimPlot(
   label = TRUE,
   label.size = 3,
   pt.size = 0.1,
-  repel = TRUE
+  repel = TRUE,
+  raster=FALSE
 ) +
-  ggtitle("SingleR Annotation (Mouse Reference)") +
+  ggtitle("SingleR Annotation (Manual)") +
   theme(plot.title = element_text(face = "bold", size = 14))
 
 ggsave("plots/automated_annotation/11_singler_final_annotation.png",
@@ -502,7 +473,7 @@ ggsave("plots/automated_annotation/11_singler_final_annotation.png",
 #-----------------------------------------------
 
 # Load scType functions from GitHub
-source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R")
+# source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R") # not useful when using prepare_gene_sets_mouse function
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
 
 
@@ -511,27 +482,39 @@ source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sct
 # STEP 12: Load scType marker database
 #-----------------------------------------------
 
-# Download the full database
-# db_url <- "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx"
-db_url <- "https://github.com/IanevskiAleksandr/sc-type/files/12363488/sc_type_mouse_alltumours.xlsx" # mouse file found in GitHub issue #4
-temp_file <- tempfile(fileext = ".xlsx")
-download.file(db_url, destfile = temp_file, mode = "wb")
 
-# Read the database for immune system
+# Run scripts from file "scType_mouse_lung.R" !
+
+# open both db files
 library(openxlsx)
-db <- read.xlsx(temp_file)
-# db_immune <- db[db$tissueType == "Immune system", ]
-db_immune <- db[db$tissueType == "All", ]
+db_sctype_wolung <- read.xlsx("ScTypeDB_mouse_wolung.xlsx")
+db_sctype_withlung <- read.xlsx("ScTypeDB_mouse_withlung.xlsx")
+db_cellmarker <- read.xlsx("cellmarker_sctype_format.xlsx")
 
-# Prepare gene sets
-# gs_list <- gene_sets_prepare(temp_file, c("Immune system", "Pancreas"))
-gs_list <- gene_sets_prepare(temp_file, "All")
+# Prepare gene sets WITHOUT using gene_sets_prepare() from scType  (keeps mouse case, no HGNC check)
+prepare_gene_sets_mouse <- function(db, tissue) {
+  d <- db[db$tissueType %in% tissue, ]
+  parse <- function(x) lapply(x, function(s) {
+    if (is.na(s) || s == "") character(0) else unique(trimws(strsplit(s, ",")[[1]]))
+  })
+  gs  <- parse(d$geneSymbolmore1); names(gs)  <- d$cellName
+  gs2 <- parse(d$geneSymbolmore2); names(gs2) <- d$cellName
+  list(gs_positive = gs, gs_negative = gs2)
+}
 
-cat("Available cell types in database:\n")
-print(names(gs_list$gs_positive))
+gs_list_sctype_wolung <- prepare_gene_sets_mouse(db_sctype_wolung, unique(db_sctype_wolung$tissueType))
+gs_list_sctype_withlung <- prepare_gene_sets_mouse(db_sctype_withlung, unique(db_sctype_withlung$tissueType))
+gs_list_cellmarker <- prepare_gene_sets_mouse(db_cellmarker, unique(db_cellmarker$tissueType))
 
-# /!\ j'en suis là, je suis bloquée sur la partie souris + le fait que ce ne soit pas un échantillon de sang. 
-# Il reste des étapes sur le guide /!\
+# checking all went well
+gs_list_sctype_withlung$gs_positive[["Alveolar type 2 cells (AT2)"]]   # should be Sftpc, Sftpb, ...
+
+cat("Available cell types in database sctype_wolung:\n")
+print(names(gs_list_sctype_wolung$gs_positive))
+cat("Available cell types in database sctype_withlung:\n")
+print(names(gs_list_sctype_withlung$gs_positive))
+cat("Available cell types in database cellmarker:\n")
+print(names(gs_list_cellmarker$gs_positive))
 
 
 
@@ -542,18 +525,19 @@ print(names(gs_list$gs_positive))
 # Get scaled data
 scaled_data <- as.matrix(LayerData(integrated_seurat, layer = "scale.data"))
 
+## sctype_wolung
 # Calculate scores
-es_max <- sctype_score(
+es_max_sctype_wolung <- sctype_score(
   scRNAseqData = scaled_data,
   scaled = TRUE,
-  gs = gs_list$gs_positive,
-  gs2 = gs_list$gs_negative
+  gs = gs_list_sctype_wolung$gs_positive,
+  gs2 = gs_list_sctype_wolung$gs_negative,
+  gene_names_to_uppercase = FALSE # to use only if using the prepare_gene_sets_mouse function
 )
-
 # Assign cell types to clusters
 clusters <- integrated_seurat$seurat_clusters
-cL_results <- do.call("rbind", lapply(unique(clusters), function(cl) {
-  es_max_cl <- sort(rowSums(es_max[, clusters == cl]), decreasing = TRUE)
+cL_results_sctype_wolung <- do.call("rbind", lapply(unique(clusters), function(cl) {
+  es_max_cl <- sort(rowSums(es_max_sctype_wolung[, clusters == cl]), decreasing = TRUE)
   
   top_score <- es_max_cl[1]
   top_type <- names(es_max_cl)[1]
@@ -565,35 +549,126 @@ cL_results <- do.call("rbind", lapply(unique(clusters), function(cl) {
     ncells = sum(clusters == cl)
   )
 }))
-
 # Filter low-confidence assignments
-score_threshold <- quantile(cL_results$scores, 0.6)
-cL_results$type[cL_results$scores < score_threshold] <- "Unknown"
-
+score_threshold_sctype_wolung <- quantile(cL_results_sctype_wolung$scores, 0.6)
+cL_results_sctype_wolung$type[cL_results_sctype_wolung$scores < score_threshold_sctype_wolung] <- "Unknown"
 # Create mapping and apply to cells
-cluster_to_sctype <- setNames(cL_results$type, cL_results$cluster)
-integrated_seurat$sctype_annotation <- unname(cluster_to_sctype[
+cluster_to_sctype_sctype_wolung <- setNames(cL_results_sctype_wolung$type, cL_results_sctype_wolung$cluster)
+integrated_seurat$sctype_wolung_annotation <- unname(cluster_to_sctype_sctype_wolung[
   as.character(integrated_seurat$seurat_clusters)
 ])
-
 # Visualize
-p_sctype <- DimPlot(
+p_sctype_sctype_wolung <- DimPlot(
   integrated_seurat,
   reduction = umap_reduction,
-  group.by = "sctype_annotation",
+  group.by = "sctype_wolung_annotation",
   label = TRUE,
   label.size = 4,
   pt.size = 0.1,
-  repel = TRUE
+  repel = TRUE,
+  raster=FALSE
 ) +
-  ggtitle("scType: Marker-Based Annotation") +
+  ggtitle("scType: wolung") +
   theme(plot.title = element_text(face = "bold", size = 14))
-
-ggsave("plots/automated_annotation/12_sctype_annotation.png", p_sctype,
+ggsave("plots/automated_annotation/12_sctype_annotation_sctype_wolung.png", p_sctype_sctype_wolung,
        width = 11, height = 8, dpi = 300)
+# rm(es_max_sctype_wolung)
+# rm(p_sctype_sctype_wolung)
 
-# Save scType results
-write.csv(cL_results, "annotations/sctype_cluster_scores.csv", row.names = FALSE)
+
+## sctype_withlung
+es_max_sctype_withlung <- sctype_score(
+  scRNAseqData = scaled_data,
+  scaled = TRUE,
+  gs = gs_list_sctype_withlung$gs_positive,
+  gs2 = gs_list_sctype_withlung$gs_negative,
+  gene_names_to_uppercase = FALSE # to use only if using the prepare_gene_sets_mouse function
+)
+cL_results_sctype_withlung <- do.call("rbind", lapply(unique(clusters), function(cl) {
+  es_max_cl <- sort(rowSums(es_max_sctype_withlung[, clusters == cl]), decreasing = TRUE)
+  
+  top_score <- es_max_cl[1]
+  top_type <- names(es_max_cl)[1]
+  
+  data.frame(
+    cluster = cl,
+    type = top_type,
+    scores = top_score,
+    ncells = sum(clusters == cl)
+  )
+}))
+score_threshold_sctype_withlung <- quantile(cL_results_sctype_withlung$scores, 0.6)
+cL_results_sctype_withlung$type[cL_results_sctype_withlung$scores < score_threshold_sctype_withlung] <- "Unknown"
+cluster_to_sctype_sctype_withlung <- setNames(cL_results_sctype_withlung$type, cL_results_sctype_withlung$cluster)
+integrated_seurat$sctype_withlung_annotation <- unname(cluster_to_sctype_sctype_withlung[
+  as.character(integrated_seurat$seurat_clusters)
+])
+p_sctype_sctype_withlung <- DimPlot(
+  integrated_seurat,
+  reduction = umap_reduction,
+  group.by = "sctype_withlung_annotation",
+  label = TRUE,
+  label.size = 4,
+  pt.size = 0.1,
+  repel = TRUE,
+  raster=FALSE
+) +
+  ggtitle("scType: withlung") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+ggsave("plots/automated_annotation/12_sctype_annotation_sctype_withlung.png", p_sctype_sctype_withlung,
+       width = 11, height = 8, dpi = 300)
+# rm(es_max_sctype_withlung)
+# rm(p_sctype_sctype_withlung)
+
+
+## cellmarker
+es_max_cellmarker <- sctype_score(
+  scRNAseqData = scaled_data,
+  scaled = TRUE,
+  gs = gs_list_cellmarker$gs_positive,
+  gs2 = gs_list_cellmarker$gs_negative,
+  gene_names_to_uppercase = FALSE # to use only if using the prepare_gene_sets_mouse function
+)
+cL_results_cellmarker <- do.call("rbind", lapply(unique(clusters), function(cl) {
+  es_max_cl <- sort(rowSums(es_max_cellmarker[, clusters == cl]), decreasing = TRUE)
+  
+  top_score <- es_max_cl[1]
+  top_type <- names(es_max_cl)[1]
+  
+  data.frame(
+    cluster = cl,
+    type = top_type,
+    scores = top_score,
+    ncells = sum(clusters == cl)
+  )
+}))
+score_threshold_cellmarker <- quantile(cL_results_cellmarker$scores, 0.6)
+cL_results_cellmarker$type[cL_results_cellmarker$scores < score_threshold_cellmarker] <- "Unknown"
+cluster_to_sctype_cellmarker <- setNames(cL_results_cellmarker$type, cL_results_cellmarker$cluster)
+integrated_seurat$cellmarker_annotation <- unname(cluster_to_sctype_cellmarker[
+  as.character(integrated_seurat$seurat_clusters)
+])
+p_sctype_cellmarker <- DimPlot(
+  integrated_seurat,
+  reduction = umap_reduction,
+  group.by = "cellmarker_annotation",
+  label = TRUE,
+  label.size = 4,
+  pt.size = 0.1,
+  repel = TRUE,
+  raster=FALSE
+) +
+  ggtitle("scType: from CellMarker2.0") +
+  theme(plot.title = element_text(face = "bold", size = 14))
+ggsave("plots/automated_annotation/12_sctype_annotation_cellmarker.png", p_sctype_cellmarker,
+       width = 11, height = 8, dpi = 300)
+# rm(es_max_cellmarker)
+# rm(p_sctype_cellmarker)
+
+
+# Save scType results (! à modifier en indiquant le clustering choisi)
+integrated_seurat$sctype_annotation <- integrated_seurat$sctype_wolung_annotation
+write.csv(cL_results_sctype_wolung, "annotations/sctype_wolung_cluster_scores.csv", row.names = FALSE)
 
 
 
@@ -612,8 +687,8 @@ obj_sccatch <- findmarkergene(
   object = obj_sccatch,
   species = "Mouse",
   marker = cellmatch,
-  tissue = "Pancreas", # from: https://github.com/ZJUFanLab/scCATCH/wiki/mouse_tissues
-  cancer = "Normal", # there is only 1 marker gene corresponding to the couple Pancreatic Cancer: Blood
+  tissue = "Lung", # from: https://github.com/ZJUFanLab/scCATCH/wiki/mouse_tissues
+  cancer = "Normal", 
   cell_min_pct = 0.25,
   logfc = 0.25,
   pvalue = 0.05
@@ -649,7 +724,8 @@ p_sccatch <- DimPlot(
   label = TRUE,
   label.size = 4,
   pt.size = 0.1,
-  repel = TRUE
+  repel = TRUE,
+  raster=FALSE
 ) +
   ggtitle("scCATCH: Tissue-Specific Database") +
   theme(plot.title = element_text(face = "bold", size = 14))
@@ -671,39 +747,39 @@ write.csv(marker_evidence,
 
 
 #-----------------------------------------------
-# STEP 15: Generate confusion matrices
+# STEP 15: Generate confusion matrices 
 #-----------------------------------------------
 
 # Function to create confusion matrix
-create_confusion_matrix <- function(method1_labels, method2_labels, 
+create_confusion_matrix <- function(method1_labels, method2_labels,
                                     method1_name, method2_name) {
   conf_table <- table(
     Method1 = method1_labels,
     Method2 = method2_labels
   )
 }
-  
+
 # Compare each automated method to manual
 conf_manual_vs_singler <- create_confusion_matrix(
   integrated_seurat$manual_annotation,
   integrated_seurat$singler_annotation,
   "Manual", "SingleR"
 )
-  
+
 conf_manual_vs_sctype <- create_confusion_matrix(
   integrated_seurat$manual_annotation,
   integrated_seurat$sctype_annotation,
   "Manual", "scType"
 )
-  
+
 conf_manual_vs_sccatch <- create_confusion_matrix(
   integrated_seurat$manual_annotation,
   integrated_seurat$sccatch_annotation,
   "Manual", "scCATCH"
 )
-  
+
 # Save confusion matrices
-write.csv(conf_manual_vs_singler, 
+write.csv(conf_manual_vs_singler,
           "annotations/confusion_matrix_manual_vs_singler.csv")
 write.csv(conf_manual_vs_sctype,
           "annotations/confusion_matrix_manual_vs_sctype.csv")
@@ -713,11 +789,11 @@ write.csv(conf_manual_vs_sccatch,
 
 
 #-----------------------------------------------
-# STEP 16: Create Sankey diagrams
+# STEP 16: Create Sankey diagrams 
 #-----------------------------------------------
 
 # Function to prepare Sankey data
-prepare_sankey_data <- function(method1_labels, method2_labels, 
+prepare_sankey_data <- function(method1_labels, method2_labels,
                                 method1_name, method2_name) {
   sankey_df <- data.frame(
     Method1 = method1_labels,
@@ -726,7 +802,7 @@ prepare_sankey_data <- function(method1_labels, method2_labels,
     group_by(Method1, Method2) %>%
     summarise(Count = n(), .groups = "drop") %>%
     mutate(Comparison = paste(method1_name, "vs", method2_name))
-  
+
   return(sankey_df)
 }
 
@@ -755,9 +831,9 @@ create_sankey_plot <- function(sankey_data, method1_name, method2_name) {
               aes(axis1 = Method1, axis2 = Method2, y = Count)) +
     geom_alluvium(aes(fill = Method1), width = 1/12, alpha = 0.7) +
     geom_stratum(width = 1/12, fill = "white", color = "grey") +
-    geom_text(stat = "stratum", aes(label = after_stat(stratum)), 
+    geom_text(stat = "stratum", aes(label = after_stat(stratum)),
               size = 3, fontface = "bold") +
-    scale_x_discrete(limits = c(method1_name, method2_name), 
+    scale_x_discrete(limits = c(method1_name, method2_name),
                      expand = c(0.05, 0.05)) +
     labs(title = paste(method1_name, "vs", method2_name),
          subtitle = "Straight flows = agreement | Crossed flows = disagreement",
@@ -767,7 +843,7 @@ create_sankey_plot <- function(sankey_data, method1_name, method2_name) {
           axis.text.y = element_blank(),
           axis.title.x = element_blank(),
           plot.title = element_text(face = "bold"))
-  
+
   return(p)
 }
 
@@ -795,7 +871,8 @@ p_manual_comp <- DimPlot(
   integrated_seurat,
   reduction = umap_reduction,
   group.by = "manual_annotation",
-  pt.size = 0.1
+  pt.size = 0.1,
+  raster=FALSE
 ) +
   labs(title = "Manual") +
   theme(legend.text = element_text(size = 7),
@@ -805,7 +882,8 @@ p_singler_comp <- DimPlot(
   integrated_seurat,
   reduction = umap_reduction,
   group.by = "singler_annotation",
-  pt.size = 0.1
+  pt.size = 0.1,
+  raster=FALSE
 ) +
   labs(title = "SingleR (Mouse)") +
   theme(legend.text = element_text(size = 7),
@@ -815,7 +893,8 @@ p_sctype_comp <- DimPlot(
   integrated_seurat,
   reduction = umap_reduction,
   group.by = "sctype_annotation",
-  pt.size = 0.1
+  pt.size = 0.1,
+  raster=FALSE
 ) +
   labs(title = "scType (Markers)") +
   theme(legend.text = element_text(size = 7),
@@ -825,17 +904,19 @@ p_sccatch_comp <- DimPlot(
   integrated_seurat,
   reduction = umap_reduction,
   group.by = "sccatch_annotation",
-  pt.size = 0.1
+  pt.size = 0.1,
+  raster=FALSE
 ) +
   labs(title = "scCATCH (Tissue DB)") +
   theme(legend.text = element_text(size = 7),
         plot.title = element_text(face = "bold"))
 
 # Combine all four methods
-p_all_methods <- (p_manual_comp | p_singler_comp) /
-  (p_sctype_comp | p_sccatch_comp)
+# p_all_methods <- (p_manual_comp | p_singler_comp) /
+#   (p_sctype_comp | p_sccatch_comp)
+p_all_methods <- (p_manual_comp | p_sccatch_comp)
 
-ggsave("plots/method_comparison/17_all_methods_comparison.png",
+ggsave("plots/method_comparison/17_all_methods_comparison_sccatch.png",
        p_all_methods, width = 18, height = 14, dpi = 300)
 
 
@@ -849,8 +930,8 @@ annotation_comparison <- data.frame(
   cell_barcode = colnames(integrated_seurat),
   cluster = integrated_seurat$seurat_clusters,
   manual = integrated_seurat$manual_annotation,
-  singler = integrated_seurat$singler_annotation,
-  sctype = integrated_seurat$sctype_annotation,
+  # singler = integrated_seurat$singler_annotation,
+  # sctype = integrated_seurat$sctype_annotation,
   sccatch = integrated_seurat$sccatch_annotation,
   sample_id = integrated_seurat$sample_id,
   condition = integrated_seurat$condition,
@@ -859,7 +940,7 @@ annotation_comparison <- data.frame(
 
 # Export to CSV for manual review
 write.csv(annotation_comparison,
-          "annotations/all_methods_comparison.csv",
+          "annotations/all_methods_comparison_sccatch.csv",
           row.names = FALSE)
 
 # Create cluster-level summary (easier to review)
@@ -868,14 +949,14 @@ cluster_summary <- annotation_comparison %>%
   summarise(
     n_cells = n(),
     manual_type = names(sort(table(manual), decreasing = TRUE))[1],
-    singler_type = names(sort(table(singler), decreasing = TRUE))[1],
-    sctype_type = names(sort(table(sctype), decreasing = TRUE))[1],
+    # singler_type = names(sort(table(singler), decreasing = TRUE))[1],
+    # sctype_type = names(sort(table(sctype), decreasing = TRUE))[1],
     sccatch_type = names(sort(table(sccatch), decreasing = TRUE))[1],
     .groups = "drop"
   )
 
 write.csv(cluster_summary,
-          "annotations/cluster_level_comparison.csv",
+          "annotations/cluster_level_comparison_sccatch.csv",
           row.names = FALSE)
 
 
@@ -886,10 +967,10 @@ write.csv(cluster_summary,
 
 # Create mapping from cluster to consensus annotation
 cluster_to_consensus <- setNames(
-  c("B cells", "T cells", "T cells", "macrophages", "T cells", "B cells", "macrophages", "cancer cells", 
-    "neutrophils", "T cells", "epithelial cells", "B cells", "acinar cells", "T cells", "macrophages", 
-    "ductal cells", "T cells", "monocytes", "cancer cells", "endothelial cells", "monocytes", "B cells"),  
-  c(0:21)
+  c("endothelium", "Pneumocyte type II", "epithelial", "fibroblast", "lung club cell", "macrophage", "fibroblast", "B cell", 
+    "epithelial", "T cell", "macrophage", "endothelium", "fibroblast", "endothelium", "immune", 
+    "epithelial", "endothelium", "fibroblast", "immune", "immune", "immune", "epithelial", "endothelium"),  
+  c(0:22)
 )
 
 # Apply consensus to all cells
@@ -905,7 +986,8 @@ p_consensus <- DimPlot(
   label = TRUE,
   label.size = 4,
   pt.size = 0.1,
-  repel = TRUE
+  repel = TRUE,
+  raster=FALSE
 ) +
   ggtitle("Final Consensus Annotation") +
   theme(plot.title = element_text(face = "bold", size = 14))
@@ -920,7 +1002,8 @@ p_consensus_split <- DimPlot(
   group.by = "final_annotation",
   split.by = "condition",
   pt.size = 0.1,
-  ncol = 2
+  ncol = 2,
+  raster=FALSE
 ) +
   ggtitle("Final Consensus by Condition")
 
@@ -942,9 +1025,9 @@ metadata_export <- integrated_seurat@meta.data %>%
     sample_id, condition, patient_id,
     seurat_clusters,
     manual_annotation,
-    singler_annotation,
-    sctype_annotation,
-    sccatch_annotation,
+    # singler_annotation,
+    # sctype_annotation,
+    # sccatch_annotation,
     final_annotation
   )
 
